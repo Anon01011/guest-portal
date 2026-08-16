@@ -320,10 +320,10 @@ export default function App() {
   };
 
   const handleApplyScannerFolder = async (
-    folderPath = scannerFolder, 
-    scannerId = selectedScanner, 
-    apiUrl = scannerApiUrl, 
-    apiUsername = scannerApiUsername, 
+    folderPath = scannerFolder,
+    scannerId = selectedScanner,
+    apiUrl = scannerApiUrl,
+    apiUsername = scannerApiUsername,
     apiPassword = scannerApiPassword
   ) => {
     if (!folderPath.trim()) {
@@ -334,7 +334,7 @@ export default function App() {
       const res = await fetchWithAuth('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           scannerFolder: folderPath.trim(),
           selectedScanner: scannerId,
           scannerApiUrl: apiUrl,
@@ -470,7 +470,7 @@ export default function App() {
       fetch(`${API}/api/license/status`)
         .then(r => r.json())
         .then(d => setLicenseStatus(d))
-        .catch(() => {});
+        .catch(() => { });
     }, intervalTime);
 
     return () => clearInterval(interval);
@@ -502,18 +502,18 @@ export default function App() {
   // Global Keyboard Wedge Scanner Listener (for USB HID barcode/swipe/MRZ scanners)
   useEffect(() => {
     if (!user) return;
-    
+
     let buffer = '';
     let lastKeyTime = Date.now();
 
     const handleGlobalKeyDown = (e) => {
       const activeEl = document.activeElement;
-      
+
       // If user is editing a form field (name, phone, dob, etc.), don't hijack keys unless it's a super fast hardware keyboard wedge swipe
-      const isEditingForm = activeEl && 
-        (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') && 
+      const isEditingForm = activeEl &&
+        (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') &&
         !activeEl.classList.contains('barcode-input');
-      
+
       const currentTime = Date.now();
       const delay = currentTime - lastKeyTime;
       lastKeyTime = currentTime;
@@ -531,11 +531,11 @@ export default function App() {
       if (e.key === 'Enter') {
         const scannedText = buffer.trim();
         buffer = ''; // Reset
-        
+
         if (scannedText.length > 0) {
           // Check if this looks like a passport/ID scan
-          const isPassportMRZ = (scannedText.length >= 80 && scannedText.startsWith('P<')) || 
-                                (scannedText.includes('P<') && scannedText.length >= 44);
+          const isPassportMRZ = (scannedText.length >= 80 && scannedText.startsWith('P<')) ||
+            (scannedText.includes('P<') && scannedText.length >= 44);
           const isNumericQID = /^\d{11}$/.test(scannedText);
           const isGenericBarcode = scannedText.length >= 5;
 
@@ -549,7 +549,7 @@ export default function App() {
             setBarcodeSearch(scannedText);
             showToast(`Hardware scan detected!`, 'success');
             setTimeout(() => {
-              handleBarcodeSearch({ preventDefault: () => {} }, scannedText);
+              handleBarcodeSearch({ preventDefault: () => { } }, scannedText);
             }, 50);
           }
         }
@@ -1328,7 +1328,7 @@ export default function App() {
         handlePinCancel();
         loadDashboardData();
         calculateStats();
-        
+
         // Refresh overlays if open
         if (activeOverlay === 'guest-mgmt') fetchGuestMgmtList();
         if (activeOverlay === 'deleted-records') fetchDeletedList();
@@ -1640,14 +1640,14 @@ export default function App() {
     setOcrProgress(30);
 
     try {
-      showToast(`Checking ${docType} scanner on local hardware...`, 'info');
-      const res = await fetchWithAuth('/api/guests/scan-detect', { 
+      showToast(`Initializing  ${docType} scanner...`, 'info');
+      const res = await fetchWithAuth('/api/guests/scan-detect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ docType })
       });
       const data = await res.json();
-      
+
       if (res.status === 412) {
         setOcrLoading(false);
         setTempScannerFolder(scannerFolder);
@@ -1684,10 +1684,10 @@ export default function App() {
 
         setOcrProgress(100);
         setOcrLoadingStage('Success! Document loaded.');
-        
+
         setTimeout(() => {
           setOcrLoading(false);
-          
+
           const isMismatch = data.docType !== docType;
           if (isMismatch) {
             setMismatchSelectedDocType(docType);
@@ -1760,7 +1760,7 @@ export default function App() {
 
         setTimeout(() => {
           setOcrLoading(false);
-          
+
           const isMismatch = data.docType !== docType;
           if (isMismatch) {
             setMismatchSelectedDocType(docType);
@@ -2007,7 +2007,7 @@ export default function App() {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexDirection: 'column', gap: '16px'
       }}>
-        <div style={{ width: '40px', height: '40px', borderRadius: '50%', border: '3px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', animation: 'lgSpin 0.7s linear infinite' }}/>
+        <div style={{ width: '40px', height: '40px', borderRadius: '50%', border: '3px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', animation: 'lgSpin 0.7s linear infinite' }} />
         <style>{'@keyframes lgSpin { to { transform: rotate(360deg); } }'}</style>
         <p style={{ color: '#64748b', fontSize: '13px', margin: 0 }}>Checking license…</p>
       </div>
@@ -2064,7 +2064,7 @@ export default function App() {
       if (filterDocType !== 'all' && g.docType !== filterDocType) return false;
       if (filterStatus === 'checkedIn' && !g.checkedIn) return false;
       if (filterStatus === 'notCheckedIn' && g.checkedIn) return false;
-      
+
       const isWarn = g.statusInfo?.current === 'warning';
       const isBlock = g.statusInfo?.current === 'blocked';
       if (filterFlag === 'warning' && !isWarn) return false;
@@ -2155,12 +2155,12 @@ export default function App() {
                 </span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', alignItems: 'end' }}>
-                
+
                 {/* Date Range Selection */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date Range</label>
-                  <select 
-                    value={filterDateRange} 
+                  <select
+                    value={filterDateRange}
                     onChange={(e) => setFilterDateRange(e.target.value)}
                     style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                   >
@@ -2174,18 +2174,18 @@ export default function App() {
                   <>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>From Date</label>
-                      <input 
-                        type="date" 
-                        value={filterStartDate} 
+                      <input
+                        type="date"
+                        value={filterStartDate}
                         onChange={(e) => setFilterStartDate(e.target.value)}
                         style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                       />
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>To Date</label>
-                      <input 
-                        type="date" 
-                        value={filterEndDate} 
+                      <input
+                        type="date"
+                        value={filterEndDate}
                         onChange={(e) => setFilterEndDate(e.target.value)}
                         style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                       />
@@ -2196,8 +2196,8 @@ export default function App() {
                 {/* Document Type */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Document Type</label>
-                  <select 
-                    value={filterDocType} 
+                  <select
+                    value={filterDocType}
                     onChange={(e) => setFilterDocType(e.target.value)}
                     style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                   >
@@ -2210,8 +2210,8 @@ export default function App() {
                 {/* Check-In Status */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Check-in Status</label>
-                  <select 
-                    value={filterStatus} 
+                  <select
+                    value={filterStatus}
                     onChange={(e) => setFilterStatus(e.target.value)}
                     style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                   >
@@ -2224,8 +2224,8 @@ export default function App() {
                 {/* Status Flags */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <label style={{ fontSize: '9px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Alert Flags</label>
-                  <select 
-                    value={filterFlag} 
+                  <select
+                    value={filterFlag}
                     onChange={(e) => setFilterFlag(e.target.value)}
                     style={{ height: '34px', border: '1px solid var(--border)', borderRadius: '4px', padding: '0 8px', fontSize: '12px', outline: 'none', background: '#fff', color: 'var(--text)' }}
                   >
@@ -2474,7 +2474,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              
+
               <div style={{ height: '0.5px', background: 'rgba(0,0,0,0.08)', margin: '4px 0' }}></div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', textAlign: 'left' }}>
@@ -2489,8 +2489,8 @@ export default function App() {
                       <span style={{ fontSize: '11px', lineHeight: '1.4' }}>
                         Please ensure your USB scanner is connected, powered on, and supports Windows WIA or TWAIN drivers.
                       </span>
-                      <button 
-                        className="btn btn-sm btn-outline-danger" 
+                      <button
+                        className="btn btn-sm btn-outline-danger"
                         style={{ marginTop: '4px', padding: '4px 12px', fontSize: '12px', background: '#fff', border: '1px solid #c53030', color: '#c53030', cursor: 'pointer', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
                         onClick={async (e) => {
                           e.preventDefault();
@@ -2509,8 +2509,8 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      <select 
-                        value={tempSelectedScanner} 
+                      <select
+                        value={tempSelectedScanner}
                         onChange={(e) => setTempSelectedScanner(e.target.value)}
                         className="fi"
                         style={{ width: '100%', height: '38px', fontSize: '13px', background: '#fff' }}
@@ -2542,17 +2542,17 @@ export default function App() {
                     Scanner Folder Output Path (Folder Watcher / Network Scanners)
                   </span>
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <input 
-                      type="text" 
-                      value={tempScannerFolder} 
-                      onChange={(e) => setTempScannerFolder(e.target.value)} 
+                    <input
+                      type="text"
+                      value={tempScannerFolder}
+                      onChange={(e) => setTempScannerFolder(e.target.value)}
                       className="fi"
                       style={{ flex: 1, height: '38px', fontSize: '13px' }}
                       placeholder="C:\ScannerOutput"
                     />
-                    <button 
+                    <button
                       type="button"
-                      className="btn" 
+                      className="btn"
                       style={{ height: '38px', padding: '0 14px', fontSize: '13px' }}
                       onClick={(e) => {
                         e.preventDefault();
@@ -2569,14 +2569,14 @@ export default function App() {
                   <span className="fl" style={{ fontSize: '10px', fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '5px' }}>
                     <i className="ti ti-shield-lock"></i> Secure Scanner Web Service API (Regula / Thales)
                   </span>
-                  
+
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     <div>
                       <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Scanner Web Service URL</span>
-                      <input 
-                        type="text" 
-                        value={tempScannerApiUrl} 
-                        onChange={(e) => setTempScannerApiUrl(e.target.value)} 
+                      <input
+                        type="text"
+                        value={tempScannerApiUrl}
+                        onChange={(e) => setTempScannerApiUrl(e.target.value)}
                         className="fi"
                         style={{ width: '100%', height: '38px', fontSize: '13px', fontFamily: 'monospace' }}
                         placeholder="e.g. http://localhost:7210"
@@ -2586,10 +2586,10 @@ export default function App() {
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <div style={{ flex: 1 }}>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Auth Username</span>
-                        <input 
-                          type="text" 
-                          value={tempScannerApiUsername} 
-                          onChange={(e) => setTempScannerApiUsername(e.target.value)} 
+                        <input
+                          type="text"
+                          value={tempScannerApiUsername}
+                          onChange={(e) => setTempScannerApiUsername(e.target.value)}
                           className="fi"
                           style={{ width: '100%', height: '38px', fontSize: '13px' }}
                           placeholder="Optional"
@@ -2598,17 +2598,17 @@ export default function App() {
                       <div style={{ flex: 1 }}>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Auth Password</span>
                         <div style={{ position: 'relative' }}>
-                          <input 
-                            type={showModalScannerApiPass ? "text" : "password"} 
-                            value={tempScannerApiPassword} 
-                            onChange={(e) => setTempScannerApiPassword(e.target.value)} 
+                          <input
+                            type={showModalScannerApiPass ? "text" : "password"}
+                            value={tempScannerApiPassword}
+                            onChange={(e) => setTempScannerApiPassword(e.target.value)}
                             className="fi"
                             style={{ width: '100%', height: '38px', fontSize: '13px', paddingRight: '36px' }}
                             placeholder="Optional"
                           />
-                          <button 
-                            type="button" 
-                            onClick={() => setShowModalScannerApiPass(!showModalScannerApiPass)} 
+                          <button
+                            type="button"
+                            onClick={() => setShowModalScannerApiPass(!showModalScannerApiPass)}
                             style={{ background: 'none', border: 'none', position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', display: 'flex', alignItems: 'center', color: '#999', padding: '3px' }}
                           >
                             <i className={showModalScannerApiPass ? "ti ti-eye-off" : "ti ti-eye"} style={{ fontSize: '15px' }} />
@@ -2622,14 +2622,14 @@ export default function App() {
             </div>
 
             <div className="confirm-modal-footer">
-              <button 
+              <button
                 type="button"
-                className="btn btn-sm" 
+                className="btn btn-sm"
                 onClick={() => setIsScannerConfigOpen(false)}
               >
                 <i className="ti ti-x" /> Cancel
               </button>
-              <button 
+              <button
                 type="button"
                 className="btn btn-sm btn-primary"
                 onClick={async (e) => {
@@ -2674,19 +2674,19 @@ export default function App() {
                 </div>
               </div>
             </div>
-            
+
             <div className="confirm-modal-footer" style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button 
-                type="button" 
-                className="btn btn-sm btn-secondary" 
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
                 onClick={() => setShowQualityWarning(false)}
               >
                 Cancel & Edit
               </button>
-              
-              <button 
-                type="button" 
-                className="btn btn-sm btn-outline-warning" 
+
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-warning"
                 style={{ color: '#d97706', border: '1px solid #d97706' }}
                 onClick={() => {
                   setShowQualityWarning(false);
@@ -2696,8 +2696,8 @@ export default function App() {
                 <i className="ti ti-refresh"></i> Scan Again
               </button>
 
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className="btn btn-sm btn-primary"
                 onClick={() => {
                   warningFileInputRef.current?.click();
@@ -2706,12 +2706,12 @@ export default function App() {
                 <i className="ti ti-upload"></i> Re-Upload
               </button>
             </div>
-            
+
             {/* Hidden File Input for Re-upload */}
-            <input 
-              type="file" 
-              ref={warningFileInputRef} 
-              style={{ display: 'none' }} 
+            <input
+              type="file"
+              ref={warningFileInputRef}
+              style={{ display: 'none' }}
               accept="image/*"
               onChange={(e) => {
                 const file = e.target.files[0];
@@ -2746,18 +2746,18 @@ export default function App() {
                 </div>
               </div>
             </div>
-            
+
             <div className="confirm-modal-footer" style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button 
-                type="button" 
-                className="btn btn-sm btn-secondary" 
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
                 onClick={() => setShowDocMismatchModal(false)}
               >
                 Cancel
               </button>
-              
-              <button 
-                type="button" 
+
+              <button
+                type="button"
                 className="btn btn-sm btn-primary"
                 onClick={() => {
                   setShowDocMismatchModal(false);
@@ -2800,8 +2800,8 @@ export default function App() {
                 <i className="ti ti-folder-open" style={{ color: 'var(--primary)', fontSize: '18px' }} />
                 Local Directory Browser
               </h3>
-              <button 
-                onClick={() => setShowDirPicker(false)} 
+              <button
+                onClick={() => setShowDirPicker(false)}
                 style={{ background: 'none', border: 'none', fontSize: '18px', color: 'var(--text-muted)', cursor: 'pointer' }}
               >
                 <i className="ti ti-x" />
@@ -2847,7 +2847,7 @@ export default function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '20px', textAlign: 'center', color: 'var(--accent)', gap: '8px' }}>
                   <i className="ti ti-alert-triangle" style={{ fontSize: '24px' }} />
                   <span style={{ fontSize: '13px', fontWeight: '600' }}>{pickerError}</span>
-                  <button 
+                  <button
                     onClick={() => loadDirPickerPath(pickerParent || '')}
                     className="btn btn-secondary btn-sm"
                     style={{ marginTop: '5px' }}
@@ -2861,7 +2861,7 @@ export default function App() {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {/* Go Up Parent Directory */}
                   {pickerParent !== null && (
-                    <div 
+                    <div
                       onClick={() => loadDirPickerPath(pickerParent)}
                       style={{
                         display: 'flex',
@@ -2888,7 +2888,7 @@ export default function App() {
                     </div>
                   ) : (
                     pickerDirs.map((dir, idx) => (
-                      <div 
+                      <div
                         key={idx}
                         onClick={() => loadDirPickerPath(pickerPath ? (pickerPath.endsWith('\\') ? pickerPath + dir : pickerPath + '\\' + dir) : dir)}
                         style={{
@@ -2917,17 +2917,17 @@ export default function App() {
 
             {/* Action buttons */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
-              <button 
-                type="button" 
-                className="btn btn-secondary" 
+              <button
+                type="button"
+                className="btn btn-secondary"
                 onClick={() => setShowDirPicker(false)}
                 style={{ height: '36px' }}
               >
                 Cancel
               </button>
-              <button 
-                type="button" 
-                className="btn btn-primary" 
+              <button
+                type="button"
+                className="btn btn-primary"
                 onClick={handleSelectDirPicker}
                 disabled={!pickerPath}
                 style={{ height: '36px' }}

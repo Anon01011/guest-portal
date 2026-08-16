@@ -1977,16 +1977,16 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
     let pass1Buffer;
     try {
       pass1Buffer = await sharp(buffer)
-        .resize({ width: 2400, fit: 'inside' })
+        .resize({ width: 1600, fit: 'inside' })
         .grayscale()
-        .clahe({ width: 150, height: 150 })
+        .clahe({ width: 120, height: 120 })
         .normalize()
         .toBuffer();
     } catch (err) {
       // Fallback if CLAHE fails
       try {
         pass1Buffer = await sharp(buffer)
-          .resize({ width: 2400, fit: 'inside' })
+          .resize({ width: 1600, fit: 'inside' })
           .grayscale()
           .normalize()
           .toBuffer();
@@ -2015,7 +2015,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       let pass2Buffer;
       try {
         pass2Buffer = await sharp(buffer)
-          .resize({ width: 2400, fit: 'inside' })
+          .resize({ width: 1600, fit: 'inside' })
           .grayscale()
           .normalize()
           .linear(1.4, -20)
