@@ -696,30 +696,26 @@ router.post('/scan-detect', async (req, res) => {
     let targetScanFile = getLatestScanFile(scannerFolder);
     let scanSource = targetScanFile ? 'folder' : '';
 
-    // Step A: If no recent scan file in folder and a WIA scanner is configured, attempt direct WIA scan
-    if (!targetScanFile && selectedScanner && !selectedScanner.startsWith('twain_') && !selectedScanner.includes('PnP')) {
+    // Step A: If no recent scan file in folder and a scanner is selected, attempt direct WIA scan
+    if (!targetScanFile && selectedScanner && !selectedScanner.startsWith('twain_')) {
       const scanFile = path.join(scannerFolder, `Scan_${Date.now()}.jpg`);
       try {
-        console.log(`Triggering direct WIA hardware scan on device: ${selectedScanner}...`);
+        console.log(`Triggering direct hardware scan on device: ${selectedScanner}...`);
         await scanner.triggerScan(selectedScanner, scanFile);
         if (fs.existsSync(scanFile)) {
           targetScanFile = scanFile;
           scanSource = 'hardware';
         }
       } catch (scanErr) {
-        console.warn('Direct WIA trigger skipped or failed:', scanErr.message);
+        console.warn('Direct hardware trigger skipped or failed:', scanErr.message);
       }
     }
 
-    // Step B: If still no file, do a short poll (up to 1.5s) to allow auto-feed scanners (Plustek/Canon/Epson) to finish saving
+    // Step B: Check scanner folder again
     if (!targetScanFile) {
-      for (let poll = 0; poll < 3; poll++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        targetScanFile = getLatestScanFile(scannerFolder);
-        if (targetScanFile) {
-          scanSource = 'folder';
-          break;
-        }
+      targetScanFile = getLatestScanFile(scannerFolder);
+      if (targetScanFile) {
+        scanSource = 'folder';
       }
     }
 

@@ -1636,34 +1636,17 @@ export default function App() {
   const handleScanDocument = async (docType) => {
     setPendingScanDocType(docType);
     setOcrLoading(true);
-    setOcrLoadingStage('Connecting to scan device...');
-    setOcrProgress(15);
-    
-    const interval = setInterval(() => {
-      setOcrProgress(prev => {
-        if (prev < 45) {
-          setOcrLoadingStage('Scanning document card...');
-          return prev + 5;
-        } else if (prev < 70) {
-          setOcrLoadingStage('Reading document details...');
-          return prev + 3;
-        } else if (prev < 90) {
-          setOcrLoadingStage('Verifying identity info...');
-          return prev + 1;
-        }
-        return prev;
-      });
-    }, 450);
+    setOcrLoadingStage(`Connecting to scanner & checking folder...`);
+    setOcrProgress(30);
 
     try {
-      showToast(`Initializing ${docType} scan on local hardware...`, 'info');
+      showToast(`Checking ${docType} scanner on local hardware...`, 'info');
       const res = await fetchWithAuth('/api/guests/scan-detect', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ docType })
       });
       const data = await res.json();
-      clearInterval(interval);
       
       if (res.status === 412) {
         setOcrLoading(false);
@@ -1676,7 +1659,7 @@ export default function App() {
           showToast('No physical scanner hardware detected.', 'warn');
           setDetectedScanners([]);
         } else if (data.error === 'NO_SCAN_FILE_FOUND') {
-          showToast('No scan file found in C:\\ScannerOutput. Please insert passport into scanner.', 'warn');
+          showToast('No scan file found in C:\\ScannerOutput. Please insert document into scanner.', 'warn');
           setDetectedScanners(data.scanners || []);
         } else {
           showToast('Please select your scanner or output folder.', 'warn');
@@ -1687,8 +1670,8 @@ export default function App() {
       }
 
       if (res.ok) {
-        setOcrLoadingStage('Verifying guest record...');
-        setOcrProgress(92);
+        setOcrLoadingStage('Reading document details & extracting MRZ...');
+        setOcrProgress(70);
         let existingG = null;
         try {
           const lookupRes = await fetchWithAuth(`/api/guests/lookup?q=${encodeURIComponent(data.idNum.trim())}`);
@@ -1700,7 +1683,7 @@ export default function App() {
         }
 
         setOcrProgress(100);
-        setOcrLoadingStage('Success!');
+        setOcrLoadingStage('Success! Document loaded.');
         
         setTimeout(() => {
           setOcrLoading(false);
