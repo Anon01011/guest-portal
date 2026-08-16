@@ -1,0 +1,881 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+const db = require('../db');
+const scanner = require('../utils/scanner');
+const { processDocumentOcr } = require('../utils/ocrParser');
+const { requireAuth } = require('../middleware/auth');
+const {
+  isValidId,
+  sanitizeStr,
+  escapeLikeWildcards,
+  isValidDate,
+  isValidPhoto,
+  getGuestWithStatus,
+  getGuestsWithStatusBatch
+} = require('../utils/helpers');
+
+const router = express.Router();
+
+// Public endpoint to serve scanned document copies (accessed by image tags without auth headers)
+router.get('/scan-copy/:idNum', async (req, res) => {
+  try {
+    const rawIdNum = req.params.idNum;
+    if (!rawIdNum || typeof rawIdNum !== 'string' || !/^[a-zA-Z0-9_\-\.]+$/.test(rawIdNum) || rawIdNum.includes('..')) {
+      return res.status(400).json({ error: 'Invalid document ID format' });
+    }
+    const idNum = path.basename(rawIdNum);
+    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
+
+    // 1. Check permanent uploads first
+    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+    if (fs.existsSync(destDir)) {
+      for (const ext of extensions) {
+        const filePath = path.join(destDir, `${idNum}${ext.toLowerCase()}`);
+        if (fs.existsSync(filePath)) {
+          return res.sendFile(filePath);
+        }
+      }
+    }
+
+    // 2. Fallback to check the temporary local scanner folder
+    const [rows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
+    const scannerFolder = rows[0]?.setting_value;
+    if (scannerFolder && fs.existsSync(scannerFolder)) {
+      for (const ext of extensions) {
+        const filePath = path.join(scannerFolder, `${idNum}${ext}`);
+        if (fs.existsSync(filePath)) {
+          return res.sendFile(filePath);
+        }
+      }
+    }
+    
+    return res.status(404).json({ error: 'Scanned document photocopy not found' });
+  } catch (err) {
+    console.error('Fetch scanned copy error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Apply requireAuth to all subsequent endpoints in this router
+router.use(requireAuth);
+
+// Get specific guest's photo copy on-demand (keeps bulk guest list payloads extremely lightweight)
+router.get('/:id/photo', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) {
+    return res.status(400).json({ error: 'Invalid guest ID format' });
+  }
+  try {
+    const [rows] = await db.query('SELECT photo FROM guests WHERE id = ?', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Guest record not found' });
+    }
+    res.json({ photo: rows[0].photo || null });
+  } catch (err) {
+    console.error('Get guest photo error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+const saveScannedCopy = async (idNum) => {
+  try {
+    const [rows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
+    const scannerFolder = rows[0]?.setting_value;
+    if (!scannerFolder || !fs.existsSync(scannerFolder)) return;
+
+    // Check if files exist in the scanner output folder
+    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
+    let foundFile = null;
+    let foundExt = '';
+    for (const ext of extensions) {
+      const filePath = path.join(scannerFolder, `${idNum}${ext}`);
+      if (fs.existsSync(filePath)) {
+        foundFile = filePath;
+        foundExt = ext;
+        break;
+      }
+    }
+
+    if (foundFile) {
+      const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+      const destPath = path.join(destDir, `${idNum}${foundExt.toLowerCase()}`);
+      fs.copyFileSync(foundFile, destPath);
+      console.log(`Successfully saved scanned copy for ID ${idNum} to ${destPath}`);
+    }
+  } catch (err) {
+    console.error('saveScannedCopy error:', err.message);
+  }
+};
+
+const saveBase64Photocopy = async (idNum, base64Data) => {
+  if (!base64Data) return;
+  try {
+    const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return;
+    const buffer = Buffer.from(matches[2], 'base64');
+    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    const destPath = path.join(destDir, `${idNum}.jpg`);
+    fs.writeFileSync(destPath, buffer);
+    console.log(`Saved base64 photocopy to uploads: ${destPath}`);
+
+    const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
+    const scannerFolder = settingsRows[0]?.setting_value;
+    if (scannerFolder) {
+      if (!fs.existsSync(scannerFolder)) {
+        fs.mkdirSync(scannerFolder, { recursive: true });
+      }
+      const customPath = path.join(scannerFolder, `${idNum}.jpg`);
+      fs.writeFileSync(customPath, buffer);
+      console.log(`Saved base64 photocopy to custom folder: ${customPath}`);
+    }
+  } catch (err) {
+    console.error('saveBase64Photocopy error:', err.message);
+  }
+};
+
+const renamePhotocopy = async (oldIdNum, newIdNum) => {
+  if (!oldIdNum || !newIdNum || oldIdNum === newIdNum) return;
+  try {
+    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
+    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+    if (fs.existsSync(destDir)) {
+      for (const ext of extensions) {
+        const oldPath = path.join(destDir, `${oldIdNum}${ext.toLowerCase()}`);
+        if (fs.existsSync(oldPath)) {
+          const newPath = path.join(destDir, `${newIdNum}${ext.toLowerCase()}`);
+          fs.renameSync(oldPath, newPath);
+          console.log(`Renamed permanent photocopy from ${oldIdNum} to ${newIdNum}`);
+          break;
+        }
+      }
+    }
+
+    const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
+    const scannerFolder = settingsRows[0]?.setting_value;
+    if (scannerFolder && fs.existsSync(scannerFolder)) {
+      for (const ext of extensions) {
+        const oldPath = path.join(scannerFolder, `${oldIdNum}${ext}`);
+        if (fs.existsSync(oldPath)) {
+          const newPath = path.join(scannerFolder, `${newIdNum}${ext}`);
+          fs.renameSync(oldPath, newPath);
+          console.log(`Renamed custom folder photocopy from ${oldIdNum} to ${newIdNum}`);
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('renamePhotocopy error:', err.message);
+  }
+};
+
+// Get guests for a date or date range (excluding deleted, omitting photo field for speed)
+router.get('/', async (req, res) => {
+  const { date, startDate, endDate, show_hidden } = req.query;
+  try {
+    let sql = 'SELECT id, name, id_num, doc_type, nationality, dob, expiry_date, phone, raw_data, checked_in, check_in_time, saved_date, hidden, status, warning_date, warning_reason, blocked_date, blocked_reason, deleted, delete_reason, deleted_at, created_at, updated_at FROM guests WHERE deleted = 0';
+    const params = [];
+
+    if (startDate && endDate && isValidDate(startDate) && isValidDate(endDate)) {
+      sql += ' AND saved_date BETWEEN ? AND ?';
+      params.push(startDate, endDate);
+    } else if (date && isValidDate(date)) {
+      sql += ' AND saved_date = ?';
+      params.push(date);
+    } else {
+      return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) or date range (startDate/endDate) is required' });
+    }
+
+    if (show_hidden !== 'true') sql += ' AND hidden = 0';
+    sql += ' ORDER BY id DESC';
+
+    const [rows] = await db.query(sql, params);
+    const refDate = date || endDate || new Date().toISOString().split('T')[0];
+    const results = await getGuestsWithStatusBatch(rows, refDate);
+    res.json(results);
+  } catch (err) {
+    console.error('Get guests error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Lookup guest by ID or name (checks deleted exact IDs to trigger restore)
+router.get('/lookup', async (req, res) => {
+  const q = sanitizeStr(req.query.q, 100);
+  if (!q) {
+    return res.status(400).json({ error: 'Search query is required' });
+  }
+  try {
+    // Check exact ID number match (includes deleted)
+    let [rows] = await db.query(
+      'SELECT * FROM guests WHERE LOWER(id_num) = ?',
+      [q.toLowerCase()]
+    );
+    // If not found, check name match (only active)
+    if (rows.length === 0) {
+      const escapedQ = escapeLikeWildcards(q.toLowerCase());
+      [rows] = await db.query(
+        'SELECT * FROM guests WHERE LOWER(name) LIKE ? AND deleted = 0',
+        [`%${escapedQ}%`]
+      );
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Guest not found' });
+    }
+
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+
+    const guest = await getGuestWithStatus(rows[0], operationalDate);
+    if (rows[0].deleted) {
+      guest.isDeleted = true;
+    }
+    res.json(guest);
+  } catch (err) {
+    console.error('Lookup error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all guests (Guest Management page)
+router.get('/all', async (req, res) => {
+  const q = sanitizeStr(req.query.q, 100);
+  const status = req.query.status;
+  const showDeleted = req.query.show_deleted === 'true';
+  const VALID_STATUSES = ['ok', 'warning', 'blocked'];
+
+  try {
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+
+    let sql = 'SELECT id, name, id_num, doc_type, nationality, dob, expiry_date, phone, raw_data, checked_in, check_in_time, saved_date, hidden, status, warning_date, warning_reason, blocked_date, blocked_reason, deleted, delete_reason, deleted_at, created_at, updated_at FROM guests WHERE deleted = ?';
+    const params = [showDeleted ? 1 : 0];
+    if (q) {
+      const escapedQ = escapeLikeWildcards(q.toLowerCase());
+      sql += ' AND (LOWER(name) LIKE ? OR LOWER(id_num) LIKE ?)';
+      params.push(`%${escapedQ}%`, `%${escapedQ}%`);
+    }
+    if (status && VALID_STATUSES.includes(status)) {
+      sql += ' AND status = ?';
+      params.push(status);
+    }
+    sql += ' ORDER BY id DESC';
+
+    // Limit output to prevent browser and network freezes if no search/filter parameters are applied
+    if (!q && !status) {
+      sql += ' LIMIT 300';
+    }
+
+    const [rows] = await db.query(sql, params);
+    const results = await getGuestsWithStatusBatch(rows, operationalDate);
+    res.json(results);
+  } catch (err) {
+    console.error('Get all guests error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new guest
+router.post('/', async (req, res) => {
+  const name      = sanitizeStr(req.body.name, 255);
+  const idNum     = sanitizeStr(req.body.idNum, 100);
+  const docType   = sanitizeStr(req.body.docType, 50);
+  const nationality = sanitizeStr(req.body.nationality, 100);
+  const dob       = sanitizeStr(req.body.dob, 10);
+  const expiryDate = sanitizeStr(req.body.expiryDate, 10);
+  const phone     = sanitizeStr(req.body.phone, 50);
+  const rawData   = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
+  const photo     = req.body.photo || null;
+  const checkedIn = !!req.body.checkedIn;
+
+  if (!name || !idNum || !docType || !nationality || !dob || !expiryDate) {
+    return res.status(400).json({ error: 'Missing required guest fields' });
+  }
+  if (!isValidDate(dob) || !isValidDate(expiryDate)) {
+    return res.status(400).json({ error: 'Invalid date format (expected YYYY-MM-DD)' });
+  }
+  if (!isValidPhoto(photo)) {
+    return res.status(400).json({ error: 'Invalid photo format' });
+  }
+
+  try {
+    const [dups] = await db.query('SELECT id, deleted FROM guests WHERE id_num = ?', [idNum]);
+    if (dups.length > 0) {
+      if (dups[0].deleted) {
+        return res.status(400).json({ error: 'GUEST_SOFT_DELETED', id: dups[0].id });
+      }
+      return res.status(400).json({ error: 'Guest with this ID number already exists' });
+    }
+
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+    if (!operationalDate) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
+    const checkInTime = checkedIn ? new Date().toLocaleTimeString('en-GB') : null;
+
+    const [result] = await db.query(
+      `INSERT INTO guests 
+       (name, id_num, doc_type, nationality, dob, expiry_date, phone, raw_data, photo, checked_in, check_in_time, saved_date) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name, idNum, docType, nationality, dob, expiryDate, phone || null, rawData || null, photo || null,
+        checkedIn ? 1 : 0, checkInTime, operationalDate]
+    );
+
+    const photoCopy = req.body.photoCopy || null;
+    if (photoCopy) {
+      await saveBase64Photocopy(idNum, photoCopy);
+    } else {
+      await saveScannedCopy(idNum);
+    }
+
+    const [inserted] = await db.query('SELECT * FROM guests WHERE id = ?', [result.insertId]);
+    res.status(201).json(await getGuestWithStatus(inserted[0], operationalDate));
+  } catch (err) {
+    console.error('Create guest error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update guest
+router.put('/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  const name       = sanitizeStr(req.body.name, 255);
+  const idNum      = sanitizeStr(req.body.idNum, 100);
+  const docType    = sanitizeStr(req.body.docType, 50);
+  const nationality = sanitizeStr(req.body.nationality, 100);
+  const dob        = sanitizeStr(req.body.dob, 10);
+  const expiryDate = sanitizeStr(req.body.expiryDate, 10);
+  const phone      = sanitizeStr(req.body.phone, 50);
+  const rawData    = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
+  const photo      = req.body.photo || null;
+
+  if (!name || !idNum || !docType || !nationality || !dob || !expiryDate) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  if (!isValidDate(dob) || !isValidDate(expiryDate)) {
+    return res.status(400).json({ error: 'Invalid date format' });
+  }
+  if (!isValidPhoto(photo)) {
+    return res.status(400).json({ error: 'Invalid photo format' });
+  }
+
+  try {
+    const [existing] = await db.query('SELECT id, id_num FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+    const oldIdNum = existing[0].id_num;
+
+    const [dups] = await db.query('SELECT id, deleted FROM guests WHERE id_num = ? AND id != ?', [idNum, id]);
+    if (dups.length > 0) {
+      if (dups[0].deleted) {
+        return res.status(400).json({ error: 'GUEST_SOFT_DELETED', id: dups[0].id });
+      }
+      return res.status(400).json({ error: 'Another guest with this ID number already exists' });
+    }
+
+    await db.query(
+      `UPDATE guests SET name=?, id_num=?, doc_type=?, nationality=?, dob=?, expiry_date=?, phone=?, raw_data=?, photo=? WHERE id=?`,
+      [name, idNum, docType, nationality, dob, expiryDate, phone || null, rawData || null, photo || null, id]
+    );
+
+    const photoCopy = req.body.photoCopy || null;
+    if (photoCopy) {
+      await saveBase64Photocopy(idNum, photoCopy);
+    } else {
+      if (oldIdNum !== idNum) {
+        await renamePhotocopy(oldIdNum, idNum);
+      }
+      await saveScannedCopy(idNum);
+    }
+
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+
+    const [updated] = await db.query('SELECT * FROM guests WHERE id = ?', [id]);
+    res.json(await getGuestWithStatus(updated[0], operationalDate));
+  } catch (err) {
+    console.error('Update guest error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Check in guest
+router.put('/:id/check-in', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  try {
+    const [existing] = await db.query('SELECT id FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+    if (!operationalDate) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
+    const checkInTime = new Date().toLocaleTimeString('en-GB');
+    await db.query(
+      'UPDATE guests SET checked_in = 1, check_in_time = ?, saved_date = ? WHERE id = ?', 
+      [checkInTime, operationalDate, id]
+    );
+    res.json({ message: 'Checked in successfully', checkInTime });
+  } catch (err) {
+    console.error('Check-in error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update guest status (warning / blocked / ok)
+router.put('/:id/status', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  const VALID_STATUSES = ['ok', 'warning', 'blocked'];
+  const status = req.body.status;
+  const reason = sanitizeStr(req.body.reason, 500);
+  const byUser = req.user; // from JWT — not from body
+
+  if (!status || !VALID_STATUSES.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status value' });
+  }
+  if (!reason) {
+    return res.status(400).json({ error: 'Reason is required' });
+  }
+
+  try {
+    const [existing] = await db.query('SELECT id FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const nowStr = new Date().toLocaleString('en-GB');
+
+    let warningDate = null, warningReason = null;
+    let blockedDate = null, blockedReason = null;
+    if (status === 'warning') { warningDate = todayStr; warningReason = reason; }
+    else if (status === 'blocked') { blockedDate = todayStr; blockedReason = reason; }
+
+    await db.query(
+      `UPDATE guests SET status=?, warning_date=?, warning_reason=?, blocked_date=?, blocked_reason=? WHERE id=?`,
+      [status, warningDate, warningReason, blockedDate, blockedReason, id]
+    );
+    await db.query(
+      `INSERT INTO status_history (guest_id, type, reason, date, by_user) VALUES (?, ?, ?, ?, ?)`,
+      [id, status, reason, nowStr, byUser]
+    );
+
+    const [settings] = await db.query(
+      'SELECT setting_value FROM settings WHERE setting_key = "operational_date"'
+    );
+    const operationalDate = settings[0]?.setting_value;
+
+    const [updated] = await db.query('SELECT * FROM guests WHERE id = ?', [id]);
+    res.json(await getGuestWithStatus(updated[0], operationalDate));
+  } catch (err) {
+    console.error('Update status error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Toggle hidden
+router.put('/:id/hide', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  try {
+    const [existing] = await db.query('SELECT hidden FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    const newHidden = existing[0].hidden ? 0 : 1;
+    await db.query('UPDATE guests SET hidden = ? WHERE id = ?', [newHidden, id]);
+    res.json({ message: 'Hidden status updated', hidden: !!newHidden });
+  } catch (err) {
+    console.error('Toggle hide error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete guest (PIN code-protected, soft-delete)
+router.post('/:id/delete', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  const pin = req.body.pin;
+  const reason = sanitizeStr(req.body.reason || '', 500) || 'No reason provided';
+  const byUser = req.user; // from JWT
+
+  if (!pin || typeof pin !== 'string') {
+    return res.status(400).json({ error: 'Deletion PIN is required' });
+  }
+
+  try {
+    // 1. Retrieve the delete PIN setting
+    const [settings] = await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['delete_pin']);
+    if (settings.length === 0) {
+      return res.status(500).json({ error: 'Delete PIN setting is not configured.' });
+    }
+
+    // 2. Verify PIN
+    const match = await bcrypt.compare(pin, settings[0].setting_value);
+    if (!match) {
+      return res.status(403).json({ error: 'Incorrect Deletion PIN' });
+    }
+
+    const [existing] = await db.query('SELECT id FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    // 3. Soft delete guest — store reason and timestamp, log to history
+    const nowStr = new Date().toLocaleString('en-GB');
+    await db.query(
+      'UPDATE guests SET deleted = 1, delete_reason = ?, deleted_at = ? WHERE id = ?',
+      [reason, nowStr, id]
+    );
+    await db.query(
+      `INSERT INTO status_history (guest_id, type, reason, date, by_user) VALUES (?, ?, ?, ?, ?)`,
+      [id, 'deleted', reason, nowStr, byUser]
+    );
+
+    res.json({ message: 'Guest deleted successfully' });
+  } catch (err) {
+    console.error('Delete guest error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Restore guest (soft-delete recovery, PIN protected)
+router.post('/:id/restore', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  const { pin } = req.body;
+  const byUser = req.user;
+
+  if (!pin || typeof pin !== 'string') {
+    return res.status(400).json({ error: 'Deletion PIN is required to restore guest record' });
+  }
+
+  try {
+    // 1. Verify delete PIN
+    const [settings] = await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['delete_pin']);
+    if (settings.length === 0) {
+      return res.status(500).json({ error: 'Delete PIN setting is not configured.' });
+    }
+
+    const match = await bcrypt.compare(pin, settings[0].setting_value);
+    if (!match) {
+      return res.status(403).json({ error: 'Incorrect Deletion PIN' });
+    }
+
+    const [existing] = await db.query('SELECT id FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    const nowStr = new Date().toLocaleString('en-GB');
+    await db.query(
+      'UPDATE guests SET deleted = 0, delete_reason = NULL, deleted_at = NULL WHERE id = ?',
+      [id]
+    );
+    await db.query(
+      `INSERT INTO status_history (guest_id, type, reason, date, by_user) VALUES (?, ?, ?, ?, ?)`,
+      [id, 'ok', 'Restored/Recovered guest record', nowStr, byUser]
+    );
+
+    res.json({ message: 'Guest restored successfully' });
+  } catch (err) {
+    console.error('Restore guest error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Permanently delete guest (hard-delete, PIN protected)
+router.post('/:id/permanent', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
+
+  const { pin } = req.body;
+
+  if (!pin || typeof pin !== 'string') {
+    return res.status(400).json({ error: 'Deletion PIN is required for permanent deletion.' });
+  }
+
+  try {
+    // 1. Verify delete PIN
+    const [settings] = await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['delete_pin']);
+    if (settings.length === 0) {
+      return res.status(500).json({ error: 'Delete PIN setting is not configured.' });
+    }
+
+    const match = await bcrypt.compare(pin, settings[0].setting_value);
+    if (!match) {
+      return res.status(403).json({ error: 'Incorrect Deletion PIN' });
+    }
+
+    const [existing] = await db.query('SELECT id FROM guests WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Guest not found' });
+
+    // Hard-delete the guest
+    await db.query('DELETE FROM guests WHERE id = ?', [id]);
+    res.json({ message: 'Guest permanently deleted from database.' });
+  } catch (err) {
+    console.error('Permanent delete error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+
+
+
+// Scan and detect new file from physical/network scanner hardware or scanner folder watch
+router.post('/scan-detect', async (req, res) => {
+  try {
+    const { docType } = req.body; // 'QID' or 'Passport'
+    
+    const [settings] = await db.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_folder", "selected_scanner")');
+    const settingsMap = {};
+    settings.forEach(s => { settingsMap[s.setting_key] = s.setting_value; });
+    
+    let scannerFolder = settingsMap['scanner_folder'];
+    const selectedScanner = settingsMap['selected_scanner'];
+
+    // Default scanner folder if not configured
+    if (!scannerFolder) {
+      scannerFolder = path.join(__dirname, '..', 'uploads', 'scans');
+    }
+
+    if (!fs.existsSync(scannerFolder)) {
+      try {
+        fs.mkdirSync(scannerFolder, { recursive: true });
+      } catch (err) {
+        return res.status(400).json({ error: `Scanner folder could not be created: ${err.message}` });
+      }
+    }
+
+    // List available scanners (WIA & PnP/Network)
+    const availableScanners = await scanner.listScanners();
+    
+    let targetScanFile = null;
+    let scanSource = '';
+
+    // Step A: Attempt physical/network WIA hardware trigger if selectedScanner is set or scanner available
+    if (selectedScanner || availableScanners.length > 0) {
+      const scanFile = path.join(scannerFolder, `Scan_${Date.now()}.jpg`);
+      try {
+        console.log(`Triggering physical/network scan on device: ${selectedScanner || 'auto-select'}...`);
+        await scanner.triggerScan(selectedScanner || '', scanFile);
+        if (fs.existsSync(scanFile)) {
+          targetScanFile = scanFile;
+          scanSource = 'hardware';
+        }
+      } catch (scanErr) {
+        console.warn('Direct WIA trigger skipped or failed, checking scanner folder for network scan files:', scanErr.message);
+      }
+    }
+
+    // Step B: If direct hardware scan did not produce a file, check scanner_folder for newest scan image file
+    if (!targetScanFile && fs.existsSync(scannerFolder)) {
+      const validExts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff'];
+      try {
+        const files = fs.readdirSync(scannerFolder);
+        const imageFiles = [];
+        for (const file of files) {
+          const ext = path.extname(file).toLowerCase();
+          if (validExts.includes(ext)) {
+            const filePath = path.join(scannerFolder, file);
+            const stats = fs.statSync(filePath);
+            imageFiles.push({ path: filePath, name: file, mtime: stats.mtimeMs });
+          }
+        }
+
+        // Sort newest first
+        imageFiles.sort((a, b) => b.mtime - a.mtime);
+
+        if (imageFiles.length > 0) {
+          // Select the most recent scan file
+          targetScanFile = imageFiles[0].path;
+          scanSource = 'folder';
+          console.log(`Detected latest network scan file from folder: ${targetScanFile}`);
+        }
+      } catch (folderErr) {
+        console.error('Error reading scanner folder:', folderErr.message);
+      }
+    }
+
+    // Step C: If NEITHER physical scan nor folder file was found, return clear status 412
+    if (!targetScanFile) {
+      if (availableScanners.length === 0) {
+        return res.status(412).json({
+          error: 'NO_HARDWARE_FOUND',
+          message: 'No physical scanner hardware or network scan files detected. Please scan a document into your designated folder, select scanner hardware, or use Camera/Upload scan.',
+          scanners: []
+        });
+      }
+      if (!selectedScanner) {
+        return res.status(412).json({
+          error: 'NO_SCANNER_SELECTED',
+          message: 'No scanner device selected and no recent scan file found in scanner folder.',
+          scanners: availableScanners
+        });
+      }
+      return res.status(412).json({
+        error: 'NO_SCAN_FILE_FOUND',
+        message: 'Scanner hardware did not produce an image and no recent scan file was found in your scanner folder.',
+        scanners: availableScanners
+      });
+    }
+
+    // Step D: Process document OCR on targetScanFile
+    const detectedData = await processDocumentOcr(targetScanFile, path.basename(targetScanFile), docType);
+    const ext = path.extname(targetScanFile);
+    
+    // Uniquify generic/unknown ID numbers to prevent file collisions
+    const genericNames = ['unknown', 'image', 'scan', 'photo'];
+    let idClean = (detectedData.idNum || '').toLowerCase().trim();
+    if (!idClean || genericNames.includes(idClean) || idClean.length < 3) {
+      detectedData.idNum = `UNKNOWN_${Date.now()}`;
+    }
+    // Sanitize to prevent directory traversal / arbitrary file write
+    detectedData.idNum = detectedData.idNum.replace(/[^a-zA-Z0-9_-]/g, '');
+
+    // Save permanently to uploads/photocopies
+    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    const destPath = path.join(destDir, `${detectedData.idNum}${ext.toLowerCase()}`);
+    fs.copyFileSync(targetScanFile, destPath);
+    console.log(`Auto-saved photocopy permanently to uploads: ${destPath}`);
+
+    // Archive scan file inside scannerFolder/archive to prevent re-processing loops
+    const archiveDir = path.join(scannerFolder, 'archive');
+    if (!fs.existsSync(archiveDir)) {
+      try {
+        fs.mkdirSync(archiveDir, { recursive: true });
+      } catch (err) {}
+    }
+    const archivePath = path.join(archiveDir, `${detectedData.idNum}${ext.toLowerCase()}`);
+    try {
+      fs.renameSync(targetScanFile, archivePath);
+    } catch (renameErr) {
+      fs.copyFileSync(targetScanFile, archivePath);
+      try { fs.unlinkSync(targetScanFile); } catch (e) {}
+    }
+    console.log(`Saved copy inside archive folder: ${archivePath}`);
+
+    // Archive companion metadata files if they exist to keep the watched folder clean
+    const baseDir = path.dirname(targetScanFile);
+    const baseName = path.basename(targetScanFile, ext);
+    const companions = ['.json', '.xml', '.txt'];
+    for (const compExt of companions) {
+      const compPath = path.join(baseDir, `${baseName}${compExt}`);
+      if (fs.existsSync(compPath)) {
+        const compDest = path.join(archiveDir, `${detectedData.idNum}${compExt}`);
+        try {
+          fs.renameSync(compPath, compDest);
+        } catch (e) {
+          try {
+            fs.copyFileSync(compPath, compDest);
+            fs.unlinkSync(compPath);
+          } catch (e2) {}
+        }
+      }
+    }
+
+    const base64Data = fs.readFileSync(archivePath).toString('base64');
+    const mimeType = ext.toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
+    
+    res.json({
+      ...detectedData,
+      scanSource,
+      photoCopyBase64: `data:${mimeType};base64,${base64Data}`
+    });
+  } catch (err) {
+    console.error('Scan detect error:', err.message);
+    res.status(500).json({ error: 'Internal server error processing scan: ' + err.message });
+  }
+});
+ 
+// Upload and detect file from client, extract information and save photo copy
+router.post('/upload-detect', async (req, res) => {
+  try {
+    const { fileName, fileData, docType } = req.body;
+    if (!fileName || !fileData) {
+      return res.status(400).json({ error: 'Missing file name or data.' });
+    }
+ 
+    // Extract base64 data
+    const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: 'Invalid base64 image data.' });
+    }
+ 
+    const mimeType = matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    const ext = path.extname(fileName) || '.jpg';
+ 
+    const detectedData = await processDocumentOcr(buffer, fileName, docType);
+ 
+    // Uniquify generic/unknown ID numbers to prevent file collisions
+    const genericNames = ['unknown', 'image', 'scan', 'photo'];
+    let idClean = (detectedData.idNum || '').toLowerCase().trim();
+    if (!idClean || genericNames.includes(idClean) || idClean.length < 3) {
+      detectedData.idNum = `UNKNOWN_${Date.now()}`;
+    }
+    // Sanitize to prevent directory traversal / arbitrary file write
+    detectedData.idNum = detectedData.idNum.replace(/[^a-zA-Z0-9_-]/g, '');
+
+    // Save permanently to uploads/photocopies
+    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    const destPath = path.join(destDir, `${detectedData.idNum}${ext.toLowerCase()}`);
+    fs.writeFileSync(destPath, buffer);
+    console.log(`Successfully saved uploaded photocopy for ID ${detectedData.idNum} to ${destPath}`);
+ 
+    // ALSO save to selected scanner folder's archive!
+    const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
+    const scannerFolder = settingsRows[0]?.setting_value;
+    if (scannerFolder && fs.existsSync(scannerFolder)) {
+      const archiveDir = path.join(scannerFolder, 'archive');
+      if (!fs.existsSync(archiveDir)) {
+        try {
+          fs.mkdirSync(archiveDir, { recursive: true });
+        } catch (err) {}
+      }
+      const customPath = path.join(archiveDir, `${detectedData.idNum}${ext.toLowerCase()}`);
+      fs.writeFileSync(customPath, buffer);
+      console.log(`Saved copy to user selected custom archive folder: ${customPath}`);
+    }
+
+    res.json({
+      ...detectedData,
+      photoCopyBase64: fileData
+    });
+  } catch (err) {
+    console.error('Upload detect error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+ 
+module.exports = router;

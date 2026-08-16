@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Environment configurations containing secrets
+.env
+.env.local
+
+# Scanned photocopies (contains PII like Passports & QIDs)
+uploads/
+
+# Database automatic and manual backups
+backups/
+
+# License cache & integrity seal (machine-specific — never commit)
+.lic
+.lic_integrity

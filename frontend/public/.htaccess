@@ -1,0 +1,12 @@
+﻿<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /guestportal/dist/
+
+  # 1. Proxy all /api requests to the cloud server
+  RewriteRule ^api/(.*)$ http://api.fsterp.com/api/$1 [P,L]
+
+  # 2. React Router Fallback — serve index.html for frontend routes
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /guestportal/dist/index.html [L]
+</IfModule>
