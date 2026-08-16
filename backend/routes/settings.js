@@ -197,15 +197,23 @@ router.get('/local-dir', async (req, res) => {
     }
 
     const resolvedPath = path.resolve(currentPath);
-    if (!fs.existsSync(resolvedPath)) {
-      return res.status(404).json({ error: 'Directory not found' });
+    let items = [];
+    try {
+      items = fs.readdirSync(resolvedPath, { withFileTypes: true });
+    } catch (readErr) {
+      console.warn(`[LocalDir] Inaccessible folder ${resolvedPath}:`, readErr.message);
+      const parentPath = path.dirname(resolvedPath);
+      return res.json({
+        currentPath: resolvedPath,
+        parent: parentPath === resolvedPath ? null : parentPath,
+        directories: []
+      });
     }
 
-    const items = fs.readdirSync(resolvedPath, { withFileTypes: true });
     const directories = [];
     for (const item of items) {
       try {
-        if (item.isDirectory()) {
+        if (item.isDirectory() && !item.name.startsWith('$') && item.name !== 'System Volume Information' && item.name !== 'Config.Msi') {
           directories.push(item.name);
         }
       } catch (e) {
@@ -222,7 +230,7 @@ router.get('/local-dir', async (req, res) => {
     });
   } catch (err) {
     console.error('Browse local-dir error:', err.message);
-    res.status(500).json({ error: 'Access denied or error reading directory' });
+    res.json({ currentPath: '', parent: null, directories: [] });
   }
 });
 

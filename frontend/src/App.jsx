@@ -1675,8 +1675,11 @@ export default function App() {
         if (data.error === 'NO_HARDWARE_FOUND') {
           showToast('No physical scanner hardware detected.', 'warn');
           setDetectedScanners([]);
+        } else if (data.error === 'NO_SCAN_FILE_FOUND') {
+          showToast('No scan file found in C:\\ScannerOutput. Please insert passport into scanner.', 'warn');
+          setDetectedScanners(data.scanners || []);
         } else {
-          showToast('No scanner hardware device configured.', 'warn');
+          showToast('Please select your scanner or output folder.', 'warn');
           setDetectedScanners(data.scanners || []);
         }
         setIsScannerConfigOpen(true);
@@ -2536,14 +2539,17 @@ export default function App() {
                           </option>
                         ))}
                       </select>
-                      {tempSelectedScanner && tempSelectedScanner.startsWith('twain_') && (
-                        <div style={{ marginTop: '8px', padding: '10px 12px', background: '#f0f9ff', color: '#0369a1', borderRadius: '5px', fontSize: '11.5px', lineHeight: '1.45', border: '1.5px solid #bae6fd', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                          <i className="ti ti-info-circle" style={{ fontSize: '15px', marginTop: '1px' }} />
-                          <div>
-                            <strong>TWAIN Scanner Mode:</strong> This scanner runs via its vendor desktop software. Please open your scanner's native desktop program and configure it to auto-save scan files directly into your selected <strong>Scanner Folder Output Path</strong> below. The app will automatically watch that folder and read your scans.
-                          </div>
+                      <div style={{ marginTop: '10px', padding: '10px 12px', background: '#f8fafc', color: '#334155', borderRadius: '6px', fontSize: '11.5px', lineHeight: '1.45', border: '1px solid #e2e8f0', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                        <i className="ti ti-info-circle" style={{ fontSize: '16px', color: '#2563eb', marginTop: '1px', flexShrink: 0 }} />
+                        <div>
+                          <strong style={{ color: '#0f172a' }}>How to Scan Passports with Plustek / USB Scanners:</strong>
+                          <ol style={{ margin: '4px 0 0 0', paddingLeft: '16px' }}>
+                            <li>Insert the passport into your scanner (Plustek SecureScan / DocAction software will auto-scan).</li>
+                            <li>Make sure the scanner saves images to <code>{tempScannerFolder || 'C:\\ScannerOutput'}</code>.</li>
+                            <li>Click <strong>Apply & Scan</strong> to load the scanned passport instantly into guest registration.</li>
+                          </ol>
                         </div>
-                      )}
+                      </div>
                     </>
                   )}
                 </div>
