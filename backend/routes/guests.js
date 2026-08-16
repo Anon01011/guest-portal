@@ -671,75 +671,71 @@ router.post('/scan-detect', async (req, res) => {
       }
     }
 
-    // List available scanners (WIA & PnP/Network)
-    const availableScanners = await scanner.listScanners();
-    
-    let targetScanFile = null;
-    let scanSource = '';
+    // Helper to find the newest valid scan image in the scanner folder
+    const getLatestScanFile = (folder) => {
+      if (!fs.existsSync(folder)) return null;
+      const validExts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff'];
+      try {
+        const files = fs.readdirSync(folder);
+        const imageFiles = [];
+        for (const file of files) {
+          const ext = path.extname(file).toLowerCase();
+          if (validExts.includes(ext)) {
+            const filePath = path.join(folder, file);
+            const stats = fs.statSync(filePath);
+            imageFiles.push({ path: filePath, name: file, mtime: stats.mtimeMs });
+          }
+        }
+        imageFiles.sort((a, b) => b.mtime - a.mtime);
+        return imageFiles.length > 0 ? imageFiles[0].path : null;
+      } catch {
+        return null;
+      }
+    };
 
-    // Step A: Attempt physical/network WIA hardware trigger if selectedScanner is set or scanner available
-    if (selectedScanner || availableScanners.length > 0) {
+    let targetScanFile = getLatestScanFile(scannerFolder);
+    let scanSource = targetScanFile ? 'folder' : '';
+
+    // Step A: If no recent scan file in folder and a WIA scanner is configured, attempt direct WIA scan
+    if (!targetScanFile && selectedScanner && !selectedScanner.startsWith('twain_') && !selectedScanner.includes('PnP')) {
       const scanFile = path.join(scannerFolder, `Scan_${Date.now()}.jpg`);
       try {
-        console.log(`Triggering physical/network scan on device: ${selectedScanner || 'auto-select'}...`);
-        await scanner.triggerScan(selectedScanner || '', scanFile);
+        console.log(`Triggering direct WIA hardware scan on device: ${selectedScanner}...`);
+        await scanner.triggerScan(selectedScanner, scanFile);
         if (fs.existsSync(scanFile)) {
           targetScanFile = scanFile;
           scanSource = 'hardware';
         }
       } catch (scanErr) {
-        console.warn('Direct WIA trigger skipped or failed, checking scanner folder for network scan files:', scanErr.message);
+        console.warn('Direct WIA trigger skipped or failed:', scanErr.message);
       }
     }
 
-    // Step B: If direct hardware scan did not produce a file, check scanner_folder for newest scan image file
-    if (!targetScanFile && fs.existsSync(scannerFolder)) {
-      const validExts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff'];
-      try {
-        const files = fs.readdirSync(scannerFolder);
-        const imageFiles = [];
-        for (const file of files) {
-          const ext = path.extname(file).toLowerCase();
-          if (validExts.includes(ext)) {
-            const filePath = path.join(scannerFolder, file);
-            const stats = fs.statSync(filePath);
-            imageFiles.push({ path: filePath, name: file, mtime: stats.mtimeMs });
-          }
-        }
-
-        // Sort newest first
-        imageFiles.sort((a, b) => b.mtime - a.mtime);
-
-        if (imageFiles.length > 0) {
-          // Select the most recent scan file
-          targetScanFile = imageFiles[0].path;
-          scanSource = 'folder';
-          console.log(`Detected latest network scan file from folder: ${targetScanFile}`);
-        }
-      } catch (folderErr) {
-        console.error('Error reading scanner folder:', folderErr.message);
-      }
-    }
-
-    // Step C: If NEITHER physical scan nor folder file was found, return clear status 412
+    // Step B: If still no file, do a short poll (up to 1.5s) to allow auto-feed scanners (Plustek/Canon/Epson) to finish saving
     if (!targetScanFile) {
+      for (let poll = 0; poll < 3; poll++) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        targetScanFile = getLatestScanFile(scannerFolder);
+        if (targetScanFile) {
+          scanSource = 'folder';
+          break;
+        }
+      }
+    }
+
+    // Step C: If NEITHER folder file nor direct scan succeeded, retrieve scanner list and return 412
+    if (!targetScanFile) {
+      const availableScanners = await scanner.listScanners();
       if (availableScanners.length === 0) {
         return res.status(412).json({
           error: 'NO_HARDWARE_FOUND',
-          message: 'No physical scanner hardware or network scan files detected. Please scan a document into your designated folder, select scanner hardware, or use Camera/Upload scan.',
+          message: 'No physical scanner hardware or scan files detected. Please scan a document into C:\\ScannerOutput, or use Camera/Upload scan.',
           scanners: []
-        });
-      }
-      if (!selectedScanner) {
-        return res.status(412).json({
-          error: 'NO_SCANNER_SELECTED',
-          message: 'No scanner device selected and no recent scan file found in scanner folder.',
-          scanners: availableScanners
         });
       }
       return res.status(412).json({
         error: 'NO_SCAN_FILE_FOUND',
-        message: 'Scanner hardware did not produce an image and no recent scan file was found in your scanner folder.',
+        message: 'No document image found in scanner output folder (C:\\ScannerOutput) or connected scanner.',
         scanners: availableScanners
       });
     }
