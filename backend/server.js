@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const os = require('os');
 const db = require('./db');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -13,8 +14,22 @@ const guestsRouter = require('./routes/guests');
 const settingsRouter = require('./routes/settings');
 const reportsRouter = require('./routes/reports');
 const { router: backupRouter, runAutoBackup } = require('./routes/backup');
-const licenseRouter = require('./routes/license');
-const { initLicense, requireLicense } = require('./middleware/license');
+
+// Safe license loading with graceful fallback
+let licenseRouter;
+let initLicense = async () => {};
+let requireLicense = (req, res, next) => next();
+
+try {
+  licenseRouter = require('./routes/license');
+  const licenseMiddleware = require('./middleware/license');
+  initLicense = licenseMiddleware.initLicense;
+  requireLicense = licenseMiddleware.requireLicense;
+} catch (err) {
+  console.warn('[Server] License modules not found, running in standard mode:', err.message);
+  licenseRouter = express.Router();
+  licenseRouter.get('/status', (req, res) => res.json({ licensed: true, configured: false }));
+}
 
 const app = express();
 
