@@ -1,6 +1,7 @@
+const path = require('path');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME } = process.env;
 
