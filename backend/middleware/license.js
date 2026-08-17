@@ -52,10 +52,10 @@ function makeStealthHidden(filePath) {
   }
 }
 
-// ─── Strict Server URL Reader (from process.env ONLY) ─────────────────────────
+// ─── Strict Server URL Reader (from process.env or fallback to https://license.fsterp.com) ───
 function getLicenseServerUrl() {
-  const url = (process.env.LICENSE_SERVER_URL || '').trim();
-  return url ? url.replace(/\/$/, '') : null;
+  const url = (process.env.LICENSE_SERVER_URL || 'https://license.fsterp.com').trim();
+  return url ? url.replace(/\/$/, '') : 'https://license.fsterp.com';
 }
 
 // ─── Hardware & Network Fingerprinting ───────────────────────────────────────
