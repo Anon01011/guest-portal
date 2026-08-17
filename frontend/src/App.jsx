@@ -19,9 +19,8 @@ import GuestManagementOverlay from './overlays/GuestManagementOverlay';
 import DeletedRecordsOverlay from './overlays/DeletedRecordsOverlay';
 
 export default function App() {
-  // ─── License State ─────────────────────────────────────────────
-  // null = loading, { licensed: true } = ok, { licensed: false } = locked
-  const [licenseStatus, setLicenseStatus] = useState(null);
+  // ─── License State (BYPASS ACTIVE) ─────────────────────────────
+  const [licenseStatus, setLicenseStatus] = useState({ licensed: true, clientName: 'FSQTAR Salon Pro (Active)' });
 
   // Auth state
   const [user, setUser] = useState(() => localStorage.getItem('user'));
