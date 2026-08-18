@@ -3,9 +3,11 @@ const path = require('path');
 const fs = require('fs');
 
 /**
- * Run a PowerShell script and return output without command line length limits
+ * Run a PowerShell script and return output without command line length limits.
+ * @param {string} script - PowerShell script to run
+ * @param {number} timeoutMs - Timeout in milliseconds (default: 25000ms)
  */
-const runPowerShell = (script) => {
+const runPowerShell = (script, timeoutMs = 25000) => {
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', '-'], {
       windowsHide: true,
@@ -14,6 +16,16 @@ const runPowerShell = (script) => {
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+
+    // Kill the PowerShell process if it exceeds the timeout
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { child.kill('SIGKILL'); } catch (e) {}
+        reject(new Error(`PowerShell operation timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -24,14 +36,22 @@ const runPowerShell = (script) => {
     });
 
     child.on('error', (err) => {
-      reject(err);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
     });
 
     child.on('close', (code) => {
-      if (code !== 0 && !stdout.trim()) {
-        return reject(new Error(stderr || `PowerShell exited with code ${code}`));
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0 && !stdout.trim()) {
+          return reject(new Error(stderr || `PowerShell exited with code ${code}`));
+        }
+        resolve(stdout.trim());
       }
-      resolve(stdout.trim());
     });
 
     child.stdin.write(script);
@@ -156,7 +176,8 @@ const listScanners = async () => {
     }
   `;
   try {
-    const output = await runPowerShell(script);
+    // 25 second timeout for enumerating scanners — enough for WIA COM + PnP queries
+    const output = await runPowerShell(script, 25000);
     if (!output || output.trim() === '[]') return [];
     const jsonMatch = output.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
     if (!jsonMatch) {
@@ -294,7 +315,8 @@ const triggerScan = async (deviceId, outputPath) => {
     Write-Output "SUCCESS"
   `;
 
-  return await runPowerShell(script);
+  // 30 second timeout for physical scan — scanner hardware can be slow to respond
+  return await runPowerShell(script, 30000);
 };
 
 /**

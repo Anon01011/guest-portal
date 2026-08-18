@@ -149,6 +149,8 @@ export default function App() {
   const [tempScannerApiPassword, setTempScannerApiPassword] = useState('');
   const [showModalScannerApiPass, setShowModalScannerApiPass] = useState(false);
   const [pendingScanDocType, setPendingScanDocType] = useState('Passport');
+  // Holds the WIA error message when scanner is detected but direct scan command failed
+  const [scannerWiaError, setScannerWiaError] = useState('');
   const [searchError, setSearchError] = useState(false);
   const [showQualityWarning, setShowQualityWarning] = useState(false);
   const [qualityWarningDocType, setQualityWarningDocType] = useState('QID');
@@ -1639,7 +1641,7 @@ export default function App() {
     setOcrProgress(30);
 
     try {
-      showToast(`Initializing  ${docType} scanner...`, 'info');
+      showToast(`Initializing ${docType} scanner...`, 'info');
       const res = await fetchWithAuth('/api/guests/scan-detect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1649,20 +1651,34 @@ export default function App() {
 
       if (res.status === 412) {
         setOcrLoading(false);
-        setTempScannerFolder(scannerFolder);
+        // Pre-populate temp state for config modal.
+        // Use backend's scannerFolder if returned (may differ from locally saved state).
+        const folderFromServer = data.scannerFolder || scannerFolder;
+        setTempScannerFolder(folderFromServer);
         setTempSelectedScanner(selectedScanner || '');
         setTempScannerApiUrl(scannerApiUrl || '');
         setTempScannerApiUsername(scannerApiUsername || '');
         setTempScannerApiPassword(scannerApiPassword || '');
+
+        // Always use the scanners array from the backend response
+        // (backend now always populates it regardless of error type)
+        const availableFromServer = data.scanners || [];
+        setDetectedScanners(availableFromServer);
+
+        // Track WIA failure message to show in config modal
+        setScannerWiaError(data.wiaError || '');
+
         if (data.error === 'NO_HARDWARE_FOUND') {
-          showToast('No physical scanner hardware detected.', 'warn');
-          setDetectedScanners([]);
+          // WIA trigger failed or truly no hardware — show descriptive message
+          if (data.wiaError) {
+            showToast(`Scanner found but WIA scan failed — place the scanned file in: ${folderFromServer}`, 'warn');
+          } else {
+            showToast(`No scanner hardware detected. Connect your scanner or use Camera/Upload.`, 'warn');
+          }
         } else if (data.error === 'NO_SCAN_FILE_FOUND') {
-          showToast('No scan file found in C:\\ScannerOutput. Please insert document into scanner.', 'warn');
-          setDetectedScanners(data.scanners || []);
+          showToast(`No scan file in ${folderFromServer} — insert document and scan it first.`, 'warn');
         } else {
           showToast('Please select your scanner or output folder.', 'warn');
-          setDetectedScanners(data.scanners || []);
         }
         setIsScannerConfigOpen(true);
         return;
@@ -1702,7 +1718,7 @@ export default function App() {
         showToast(data.error || 'Failed to detect scan file.', 'warn');
       }
     } catch (err) {
-      clearInterval(interval);
+      // NOTE: No clearInterval here — there is no polling interval in this function
       setOcrLoading(false);
       console.error('Scan error:', err);
       showToast('Error communicating with local scanner.', 'warn');
@@ -2449,7 +2465,6 @@ export default function App() {
         onConfirm={doRestoreDatabase}
         onCancel={() => { setShowRestoreConfirm(false); setRestorePayload(null); }}
       />
-
       {/* STATUS HISTORY TIMELINE MODAL */}
       <HistoryLogModal
         show={showHistoryModal}
@@ -2459,8 +2474,43 @@ export default function App() {
 
       {/* SCANNER HARDWARE CONFIGURATION MODAL */}
       {isScannerConfigOpen && (
-        <div className="confirm-modal-overlay" style={{ zIndex: 1100 }} onClick={() => setIsScannerConfigOpen(false)}>
+        <div className="confirm-modal-overlay" style={{ zIndex: 1100 }} onClick={() => { setIsScannerConfigOpen(false); setScannerWiaError(''); }}>
           <div className="confirm-modal" style={{ width: '480px', maxWidth: '96%' }} onClick={(e) => e.stopPropagation()}>
+            {/* WIA failure warning banner — shown when scanner is visible but direct scan command failed */}
+            {scannerWiaError && (() => {
+              // Extract a short 1-line summary from the potentially long PowerShell error dump
+              const rawErr = scannerWiaError || '';
+              // Grab first sentence/line that contains a real error description
+              const firstLine = rawErr.split(/\n|;|\r/)[0].trim();
+              const shortErr = firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
+              const isTwain = (tempSelectedScanner || '').toLowerCase().startsWith('twain_') ||
+                              (tempSelectedScanner || '').toLowerCase().includes('twain');
+              return (
+                <div style={{ background: '#fffbeb', borderBottom: '2px solid #fcd34d', padding: '12px 16px', display: 'flex', gap: '10px', alignItems: 'flex-start', fontSize: '12.5px', color: '#78350f' }}>
+                  <i className="ti ti-alert-triangle" style={{ fontSize: '20px', color: '#f59e0b', flexShrink: 0, marginTop: '1px' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                      {isTwain ? 'TWAIN Driver — Use Folder Watch Mode' : 'WIA Direct Scan Failed'}
+                    </strong>
+                    <span style={{ display: 'block', marginBottom: '6px', lineHeight: '1.5', color: '#92400e' }}>
+                      {isTwain
+                        ? 'TWAIN scanners cannot be triggered directly by the app. Use your scanner\'s native software to scan, save the image to the folder below, then click Apply & Scan.'
+                        : <>Scanner was found but the scan command failed. <em style={{ fontStyle: 'normal', fontWeight: 600 }}>{shortErr}</em></>}
+                    </span>
+                    {!isTwain && rawErr.length > shortErr.length && (
+                      <details style={{ marginBottom: '6px' }}>
+                        <summary style={{ cursor: 'pointer', fontSize: '11px', color: '#b45309', fontWeight: 600 }}>Show technical details</summary>
+                        <pre style={{ marginTop: '6px', padding: '8px', background: 'rgba(0,0,0,0.06)', borderRadius: '4px', fontSize: '10px', color: '#451a03', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '100px', overflowY: 'auto', lineHeight: '1.4' }}>{rawErr}</pre>
+                      </details>
+                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px', background: 'rgba(245,158,11,0.12)', borderRadius: '5px', border: '1px solid rgba(245,158,11,0.3)' }}>
+                      <i className="ti ti-bulb" style={{ fontSize: '14px', color: '#d97706', flexShrink: 0 }} />
+                      <span style={{ fontSize: '11.5px' }}><strong>Fix:</strong> Scan your document using the scanner's native app → save to the <strong>folder path below</strong> → click <strong>Apply &amp; Scan</strong>.</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="confirm-modal-hdr" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div className="confirm-modal-icon-wrap" style={{ background: 'var(--primary-light)', color: 'var(--primary)', width: '40px', height: '40px', borderRadius: '5px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>
@@ -2521,17 +2571,38 @@ export default function App() {
                           </option>
                         ))}
                       </select>
-                      <div style={{ marginTop: '10px', padding: '10px 12px', background: '#f8fafc', color: '#334155', borderRadius: '6px', fontSize: '11.5px', lineHeight: '1.45', border: '1px solid #e2e8f0', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                        <i className="ti ti-info-circle" style={{ fontSize: '16px', color: '#2563eb', marginTop: '1px', flexShrink: 0 }} />
-                        <div>
-                          <strong style={{ color: '#0f172a' }}>How to Scan Passports with Plustek / USB Scanners:</strong>
-                          <ol style={{ margin: '4px 0 0 0', paddingLeft: '16px' }}>
-                            <li>Insert the passport into your scanner (Plustek SecureScan / DocAction software will auto-scan).</li>
-                            <li>Make sure the scanner saves images to <code>{tempScannerFolder || 'C:\\ScannerOutput'}</code>.</li>
-                            <li>Click <strong>Apply & Scan</strong> to load the scanned passport instantly into guest registration.</li>
-                          </ol>
-                        </div>
-                      </div>
+                      {(() => {
+                        const isTwainDev = (tempSelectedScanner || '').toLowerCase().startsWith('twain_') || (tempSelectedScanner || '').toLowerCase().includes('twain');
+                        const isPnpDev  = (tempSelectedScanner || '').toLowerCase().startsWith('pnp_');
+                        if (isTwainDev || isPnpDev) {
+                          return (
+                            <div style={{ marginTop: '10px', padding: '10px 12px', background: '#fffbeb', color: '#78350f', borderRadius: '6px', fontSize: '11.5px', lineHeight: '1.5', border: '1px solid #fcd34d', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <i className="ti ti-info-circle" style={{ fontSize: '16px', color: '#f59e0b', marginTop: '1px', flexShrink: 0 }} />
+                              <div>
+                                <strong style={{ color: '#78350f' }}>TWAIN / PnP Scanner — Folder Watch Mode Required</strong>
+                                <ol style={{ margin: '4px 0 0 0', paddingLeft: '16px' }}>
+                                  <li>Open your scanner's native software (e.g. DocAction, SecureScan, EPSON Scan).</li>
+                                  <li>Scan the document and <strong>save/export</strong> the image to: <code style={{ background: 'rgba(0,0,0,0.07)', padding: '1px 4px', borderRadius: '3px' }}>{tempScannerFolder || 'C:\\ScannerOutput'}</code>.</li>
+                                  <li>Come back here and click <strong>Apply &amp; Scan</strong> — the app will pick up the file automatically.</li>
+                                </ol>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div style={{ marginTop: '10px', padding: '10px 12px', background: '#f0fdf4', color: '#14532d', borderRadius: '6px', fontSize: '11.5px', lineHeight: '1.5', border: '1px solid #bbf7d0', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                            <i className="ti ti-device-imac" style={{ fontSize: '16px', color: '#16a34a', marginTop: '1px', flexShrink: 0 }} />
+                            <div>
+                              <strong style={{ color: '#14532d' }}>WIA Scanner — Direct Scan Mode</strong>
+                              <ol style={{ margin: '4px 0 0 0', paddingLeft: '16px' }}>
+                                <li>Place the document face-down on your scanner flatbed or in the ADF.</li>
+                                <li>Click <strong>Apply &amp; Scan</strong> — the app will command the scanner directly.</li>
+                                <li>If it fails, switch to Folder Watch: scan via native software → save to <code style={{ background: 'rgba(0,0,0,0.07)', padding: '1px 4px', borderRadius: '3px' }}>{tempScannerFolder || 'C:\\ScannerOutput'}</code>.</li>
+                              </ol>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
                 </div>
@@ -2624,7 +2695,10 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn-sm"
-                onClick={() => setIsScannerConfigOpen(false)}
+                onClick={() => {
+                  setIsScannerConfigOpen(false);
+                  setScannerWiaError('');
+                }}
               >
                 <i className="ti ti-x" /> Cancel
               </button>

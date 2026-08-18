@@ -166,19 +166,24 @@ const extractNameWithFallback = (ocrText) => {
 
       const getUppercaseScore = (str) => {
         if (!str) return 0;
-        const words = str.split(/\s+/).filter(w => w.length >= 3 && /^[A-Z]+$/.test(w));
+        const words = str.split(/\s+/).filter(w => {
+          const clean = w.replace(/[^A-Za-z]/g, '');
+          return clean.length >= 2 && /^[A-Za-z]+$/.test(clean);
+        });
         return words.length;
       };
+
+      const formatNameCandidate = (s) => s.toUpperCase().replace(/0/g, 'O').replace(/1/g, 'I').replace(/[^A-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
 
       const scoreInline = getUppercaseScore(cleanInline);
       const scoreNext = getUppercaseScore(cleanNext);
 
       if (scoreNext > scoreInline && scoreNext >= 2) {
-        return cleanNext.toUpperCase().replace(/\s+/g, ' ').trim();
+        return formatNameCandidate(cleanNext);
       } else if (cleanInline.length > 3 && scoreInline >= 1) {
-        return cleanInline.toUpperCase().replace(/0/g, 'O').replace(/1/g, 'I').replace(/[^A-Z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        return formatNameCandidate(cleanInline);
       } else if (cleanNext.length > 3 && scoreNext >= 1) {
-        return cleanNext.toUpperCase().replace(/0/g, 'O').replace(/1/g, 'I').replace(/[^A-Z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        return formatNameCandidate(cleanNext);
       }
     }
   }
@@ -196,19 +201,13 @@ const extractNameWithFallback = (ocrText) => {
   for (const line of nameLines) {
     const cleaned = line.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
     if (!cleaned) continue;
-    const words = cleaned.split(/\s+/).filter(w => w.length >= 2);
+    const words = cleaned.split(/\s+/).filter(w => w.replace(/[^A-Za-z]/g, '').length >= 2);
     if (words.length < 2) continue;
-    
-    // Must be uppercase words
-    const isAllUpper = words.every(w => /^[A-Z]+$/.test(w));
-    if (!isAllUpper) continue;
-    
-    // Check if contains any header word
-    if (words.some(w => qidHeaderWords.has(w))) continue;
-    
-    // Keep it if it is length 8-50
-    if (cleaned.length >= 8 && cleaned.length <= 50) {
-      return cleaned.toUpperCase();
+    const upperWords = words.map(w => w.toUpperCase());
+    if (upperWords.some(w => qidHeaderWords.has(w))) continue;
+    const normalized = upperWords.join(' ').replace(/[^A-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (normalized.length >= 8 && normalized.length <= 55) {
+      return normalized;
     }
   }
 
@@ -999,112 +998,228 @@ const parseMRZ = (ocrText) => {
   return null;
 };
 
-const parseQIDText = (ocrText) => {
-  // Filter out MRZ lines to prevent false matching QID from MRZ numbers
-  const qidLines = ocrText.split('\n');
-  const nonMrzTextForQid = qidLines.filter(l => {
+const PLACEHOLDER_NAMES = new Set([
+  'Scanned Passport Holder', 'Scanned QID Holder',
+  'Uploaded QID Holder', 'Uploaded Passport Holder'
+]);
+
+const QID_HEADER_WORDS = new Set(['STATE', 'QATAR', 'CARD', 'RESIDENCY', 'CIVIL', 'REGISTER',
+  'NATIONAL', 'IDENTITY', 'MINISTRY', 'INTERIOR', 'PERMIT', 'WORK', 'PASS', 'HOLDER',
+  'DATE', 'BIRTH', 'EXPIRY', 'NATIONALITY', 'GENDER', 'OCCUPATION', 'ADDRESS', 'VALID',
+  'ISSUED', 'ISSUE', 'PLACE', 'PHOTO', 'SIGNATURE', 'NUMBER', 'SERIAL', 'BARCODE',
+  'PASSPORT', 'SURNAME', 'GIVEN', 'AUTHORITY', 'SEX', 'OFFICIAL', 'OFFICE', 'BEARER',
+  'OF', 'THE', 'AND', 'FOR', 'RESIDENT', 'RESIDENCE', 'PERSONAL', 'DOCUMENT', 'DOB',
+  'EXP', 'VALIDITY', 'MOI', 'SPONSOR', 'PROFESSION', 'TYPE', 'ID', 'INDIA', 'PERMIT']);
+
+const filterMrzLinesFromText = (ocrText) => {
+  return ocrText.split('\n').filter(l => {
     const clean = l.replace(/\s/g, '').toUpperCase();
     const isMrzCandidate = (clean.startsWith('P') || clean.startsWith('V') || clean.match(/^[A-Z0-9<]{9,}\d/)) && clean.length >= 20;
     const hasLowercase = /[a-z]/.test(l);
     const hasPunct = /[,.?@#$!%&*()_+={}\[\]]/.test(l);
     return !(isMrzCandidate && !hasLowercase && !hasPunct);
   }).join('\n');
+};
 
-  // Allow common OCR digit misreads in QID regex (length 11, starting with 2 or 3)
-  const qidMatch = nonMrzTextForQid.match(/\b([23][0-9OoIliT]{10})\b/) || nonMrzTextForQid.match(/([23][0-9OoIliT]{10})/);
-  if (qidMatch) {
-    const qid = qidMatch[1].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+const normalizeQidDigits = (raw) => String(raw || '')
+  .replace(/[OoQqD]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2')
+  .replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/\D/g, '');
 
-    // Validate country code in QID (digits 4 to 6)
-    const countryCode = qid.substring(3, 6);
-    // Accept any valid 3-digit numeric country code (QIDs use standard ISO-3166 numeric country codes)
-    if (!/^\d{3}$/.test(countryCode)) {
-      return null;
-    }
+const isValidQidNumber = (qid) => qid && qid.length === 11 && /^[23]/.test(qid) && /^\d{3}$/.test(qid.substring(3, 6));
 
-    // 1. Decode Birth Year from QID
-    const firstDigit = qid[0];
-    const century = firstDigit === '2' ? '19' : '20';
-    const birthYear = parseInt(`${century}${qid.substring(1, 3)}`);
-
-    const nameLines = ocrText.split('\n');
-    const foundDates = extractDates(ocrText);
-
-    // 2. Decode DOB
-    let dob = `${birthYear}-01-01`; // Default fallback using QID birth year
-    const dobMatch = foundDates.find(d => d.year === birthYear);
-    if (dobMatch) {
-      dob = dobMatch.iso;
-    } else {
-      const dobLine = nameLines.find(l => {
-        const upper = l.toUpperCase();
-        return upper.includes('D.O.B') || upper.includes('DOB') || upper.includes('BIRTH') || upper.includes('الميلاد');
-      });
-      if (dobLine) {
-        const lineDates = extractDates(dobLine);
-        if (lineDates.length > 0) {
-          dob = lineDates[0].iso;
-        }
-      }
-    }
-
-    // 3. Decode Expiry
-    let exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const expLine = nameLines.find(l => {
-      const upper = l.toUpperCase();
-      return upper.includes('EXP') || upper.includes('VALI') || upper.includes('Expiry') || upper.includes('الصلاحية');
-    });
-
-    if (expLine) {
-      const lineDates = extractDates(expLine);
-      if (lineDates.length > 0) {
-        exp = lineDates[0].iso;
-      }
-    } else {
-      const otherDate = foundDates.find(d => d.iso !== dob);
-      if (otherDate) {
-        exp = otherDate.iso;
-      }
-    }
-
-    // 4. Decode Name
-    let name = extractNameWithFallback(ocrText) || 'Scanned QID Holder';
-
-    // 5. Decode Nationality using standard QID numeric country codes
-    let nationality = qidCountryMap[countryCode] || 'Qatari';
-
-    // Fallback: look for nationality label in text if lookup fails or defaults
-    if (nationality === 'Qatari') {
-      for (let i = 0; i < nameLines.length; i++) {
-        const line = nameLines[i].toUpperCase();
-        if (line.includes('NATIONALITY:') || line.includes('NATIONALITY')) {
-          const clean = nameLines[i].replace(/nationality:/i, '').replace(/nationality/i, '').replace(/[^A-Za-z\s]/g, '').trim();
-          if (clean.length > 3) {
-            nationality = clean.toUpperCase();
-            break;
-          }
-        }
-      }
-    }
-
-    return {
-      name,
-      idNum: qid,
-      docType: 'QID',
-      nat: nationality,
-      dob,
-      exp
-    };
+const pushQidCandidate = (candidates, raw, labeled, lineIndex = 0) => {
+  const digits = normalizeQidDigits(raw);
+  if (digits.length === 11 && /^[23]/.test(digits) && isValidQidNumber(digits)) {
+    candidates.push({ qid: digits, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (qidCountryMap[digits.substring(3, 6)] ? 50 : 0) });
+    return;
   }
-  return null;
+  if (digits.length > 11) {
+    for (let j = 0; j <= digits.length - 11; j++) {
+      const sub = digits.substring(j, j + 11);
+      if (isValidQidNumber(sub)) {
+        candidates.push({ qid: sub, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (qidCountryMap[sub.substring(3, 6)] ? 50 : 0) });
+      }
+    }
+  }
+};
+
+const extractQidNumberFromText = (ocrText) => {
+  const lines = ocrText.split('\n');
+  const nonMrz = filterMrzLinesFromText(ocrText);
+  const idLabelPattern = /(?:QID|ID\s*\.?\s*NO|ID\s*NUMBER|PERSONAL\s*NO|DOCUMENT\s*NO|الرقم|رقم)/i;
+  const candidates = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!idLabelPattern.test(lines[i])) continue;
+    for (let j = 0; j < 3 && i + j < lines.length; j++) {
+      const line = lines[i + j];
+      const localPattern = /([23][0-9OoIliT|!\s\-]{9,18})/g;
+      let match;
+      while ((match = localPattern.exec(line)) !== null) {
+        pushQidCandidate(candidates, match[1], true, i + j);
+      }
+    }
+  }
+
+  let match;
+  const spacedPattern = /\b([23])\s*([0-9OoIliT|!]{3})\s*([0-9OoIliT|!]{3})\s*([0-9OoIliT|!]{4})\b/g;
+  while ((match = spacedPattern.exec(nonMrz)) !== null) {
+    pushQidCandidate(candidates, match.slice(1).join(''), false);
+  }
+  const globalPattern = /\b([23][0-9OoIliT|!]{10})\b/g;
+  while ((match = globalPattern.exec(nonMrz)) !== null) {
+    pushQidCandidate(candidates, match[1], false);
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].qid;
+};
+
+const normalizeLatinName = (str) => String(str || '').toUpperCase()
+  .replace(/0/g, 'O').replace(/1/g, 'I').replace(/[^A-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+
+const cleanExtractedName = (str) => {
+  let n = normalizeLatinName(str);
+  n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '').trim();
+  n = n.replace(/\s+(?:NAME|NAM|AME)\s*$/i, '').trim();
+  // Drop trailing single-letter OCR noise (e.g. "PUTHOOR B")
+  n = n.replace(/\s+[A-Z]$/i, '').trim();
+  return n;
+};
+
+const scoreLatinName = (str) => {
+  const normalized = normalizeLatinName(str);
+  if (!normalized || normalized.length < 5) return 0;
+  const words = normalized.split(/\s+/).filter(w => w.length >= 2);
+  if (words.length < 2) return 0;
+  if (words.some(w => QID_HEADER_WORDS.has(w))) return 0;
+  if (/\d/.test(str)) return 0;
+  return words.length * 15 + Math.min(normalized.length, 45);
+};
+
+const extractQidNameFromText = (ocrText) => {
+  const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
+  let bestName = '';
+  let bestScore = 0;
+  const nameLabelPattern = /(?:^|\b)(?:NAME|FULL\s*NAME|NAM|AME|الاسم)\b/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!nameLabelPattern.test(lines[i])) continue;
+    const inline = lines[i].replace(/full\s*name/i, '').replace(/\bname\b/i, '').replace(/الاسم/g, '')
+      .replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const nextLine = (lines[i + 1] || '').replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const next2 = (lines[i + 2] || '').replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const candidate of [nextLine, next2, inline]) {
+      const score = scoreLatinName(candidate);
+      if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(candidate); }
+    }
+  }
+
+  // Qatar Residency Permit prints the full name in the bottom name bar
+  const bottomStart = Math.max(0, Math.floor(lines.length * 0.65));
+  for (let i = bottomStart; i < lines.length; i++) {
+    const latinChars = (lines[i].match(/[A-Za-z]/g) || []).length;
+    const totalChars = lines[i].replace(/\s/g, '').length;
+    if (totalChars === 0 || latinChars / totalChars < 0.5) continue;
+    const cleaned = lines[i].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const score = scoreLatinName(cleaned) + 20;
+    if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(cleaned); }
+  }
+
+  for (const line of lines) {
+    const latinChars = (line.match(/[A-Za-z]/g) || []).length;
+    const totalChars = line.replace(/\s/g, '').length;
+    if (totalChars === 0 || latinChars / totalChars < 0.55) continue;
+    const cleaned = line.replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const score = scoreLatinName(cleaned);
+    if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(cleaned); }
+  }
+
+  return bestName;
+};
+
+const extractQidNationality = (ocrText, countryCode) => {
+  let nationality = qidCountryMap[countryCode] || '';
+  const natCountries = ['INDIA', 'PAKISTAN', 'QATAR', 'NEPAL', 'BANGLADESH', 'PHILIPPINES', 'SRI LANKA',
+    'EGYPT', 'JORDAN', 'LEBANON', 'SYRIA', 'YEMEN', 'SUDAN', 'USA', 'UNITED STATES', 'UNITED KINGDOM'];
+  const upper = ocrText.toUpperCase();
+  for (const c of natCountries) {
+    if (upper.includes(c)) return c;
+  }
+  const lines = ocrText.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (/nationality|nationalité|الجنسية/i.test(lines[i])) {
+      for (let j = i; j <= i + 2 && j < lines.length; j++) {
+        const clean = lines[j].replace(/nationality|nationalité|الجنسية/gi, '').replace(/[^A-Za-z\s]/g, ' ').trim().toUpperCase();
+        for (const c of natCountries) {
+          if (clean.includes(c)) return c;
+        }
+        if (clean.length >= 4 && clean.length <= 25 && /^[A-Z\s]+$/.test(clean)) return clean;
+      }
+    }
+  }
+  return nationality || 'Qatari';
+};
+
+const looksLikeFilename = (id, fileName) => {
+  if (!id) return true;
+  const upper = String(id).toUpperCase();
+  if (/PAGE|JPG|JPEG|PNG|PDF|SCAN|IMAGE|PHOTO|DSC|IMG|CAMERA|RONNY/i.test(upper) && !/^[23]\d{10}$/.test(upper)) return true;
+  if (fileName) {
+    const base = path.basename(fileName, path.extname(fileName)).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (base && upper === base) return true;
+    if (base && upper.includes(base) && base.length > 6) return true;
+  }
+  const digits = (upper.match(/\d/g) || []).length;
+  const letters = (upper.match(/[A-Z]/g) || []).length;
+  if (letters >= 5 && digits < 4) return true;
+  return false;
+};
+
+const parseQIDText = (ocrText) => {
+  const qid = extractQidNumberFromText(ocrText);
+  if (!qid) return null;
+
+  const countryCode = qid.substring(3, 6);
+  const firstDigit = qid[0];
+  const century = firstDigit === '2' ? '19' : '20';
+  const birthYear = parseInt(`${century}${qid.substring(1, 3)}`);
+
+  const nameLines = ocrText.split('\n');
+  const foundDates = extractDates(ocrText);
+
+  let dob = `${birthYear}-01-01`;
+  const dobMatch = foundDates.find(d => d.year === birthYear);
+  if (dobMatch) {
+    dob = dobMatch.iso;
+  } else {
+    const dobLine = nameLines.find(l => /D\.?O\.?B|DOB|BIRTH|الميلاد/i.test(l));
+    if (dobLine) {
+      const lineDates = extractDates(dobLine);
+      if (lineDates.length > 0) dob = lineDates[0].iso;
+    }
+  }
+
+  let exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const expLine = nameLines.find(l => /EXP|EXPIRY|VALI|الصلاحية/i.test(l));
+  if (expLine) {
+    const lineDates = extractDates(expLine);
+    if (lineDates.length > 0) exp = lineDates[0].iso;
+  } else if (foundDates.length >= 2) {
+    const sorted = [...foundDates].sort((a, b) => a.year - b.year);
+    exp = sorted[sorted.length - 1].iso;
+  }
+
+  const name = cleanExtractedName(extractQidNameFromText(ocrText) || extractNameWithFallback(ocrText)) || 'Scanned QID Holder';
+  const nationality = extractQidNationality(ocrText, countryCode);
+
+  return { name, idNum: qid, docType: 'QID', nat: nationality, dob, exp };
 };
 
 // Main entry point for document OCR details detection
 const parseDocumentDetails = (fileName, docType, ocrText = '') => {
   const combined = `${fileName} ${ocrText}`.toLowerCase();
-
-  const femaleAvatar = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZmFlOGZmIi8+PGNpcmNsZSBjeD0iNTAiIGN5PSI0MCIgcj0iMjIiIGZpbGw9IiNkOTQ2ZWYiLz48cGF0aCBkPSJNMjAgODVjMC0xNSAxMi0yNSAzMC0yNXMzMCAxMCAzMCAyNXoiIGZpbGw9IiNkOTQ2ZWYiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjQwIiByPSIxOCIgZmlsbD0iI2ZiY2ZlOCIvPjwvc3ZnPg==';
-  const maleAvatar = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZTBmMmZlIi8+PGNpcmNsZSBjeD0iNTAiIGN5PSI0MCIgcj0iMjIiIGZpbGw9IiMwMjg0YzciLz48cGF0aCBkPSJNMjAgODVjMC0xNSAxMi0yNSAzMC0yNXMzMCAxMCAzMCAyNXoiIGZpbGw9IiMwMjg0YzciLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjQwIiByPSIxOCIgZmlsbD0iI2JhZTZmZCIvPjwvc3ZnPg==';
 
   // Helper to validate passport number structure (rejects obviously misread MRZ lines with too many letters)
   const isValidPassportNo = (pNo) => {
@@ -1147,8 +1262,23 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
   const isPassportExpected = docType === 'Passport' ||
     (docType !== 'QID' && (combined.includes('passport') || ocrText.includes('P<') || ocrText.includes('V<') || ocrText.includes('PSIND') || ocrText.includes('P<IND')));
 
-  // 1. Try standard Passport MRZ parsing
-  const mrzData = parseMRZ(ocrText);
+  // When user selected QID, parse QID layout before passport MRZ
+  if (docType === 'QID') {
+    const qidEarly = parseQIDText(ocrText);
+    if (qidEarly) {
+      return {
+        ...qidEarly,
+        phone: '',
+        facePhotoBase64: null,
+        raw: `OCR Parsed from Qatar ID:\nName: ${qidEarly.name}\nQID No: ${qidEarly.idNum}\nNationality: ${qidEarly.nat}\nDOB: ${qidEarly.dob}\nExpiry: ${qidEarly.exp}`
+      };
+    }
+  }
+
+  // 1. Try standard Passport MRZ parsing (skip for explicit QID when no MRZ indicators)
+  const mrzData = (docType === 'QID' && !ocrText.includes('P<') && !ocrText.includes('V<'))
+    ? null
+    : parseMRZ(ocrText);
   if (mrzData) {
     // Override passport number from text-regex if MRZ returned garbage/invalid
     if (!isValidPassportNo(mrzData.idNum)) {
@@ -1186,7 +1316,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
     return {
       ...mrzData,
       phone: '',
-      facePhotoBase64: mrzData.name.includes('ANGELA') ? femaleAvatar : maleAvatar,
+      facePhotoBase64: null,
       raw: `OCR Parsed from Passport MRZ:\nName: ${mrzData.name}\nPassport No: ${mrzData.idNum}\nNationality: ${mrzData.nat}\nDOB: ${mrzData.dob}\nExpiry: ${mrzData.exp}`
     };
   }
@@ -1197,7 +1327,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
     return {
       ...qidData,
       phone: '',
-      facePhotoBase64: qidData.name.includes('DEBORAH') ? femaleAvatar : maleAvatar,
+      facePhotoBase64: null,
       raw: `OCR Parsed from Qatar ID:\nName: ${qidData.name}\nQID No: ${qidData.idNum}\nNationality: ${qidData.nat}\nDOB: ${qidData.dob}\nExpiry: ${qidData.exp}`
     };
   }
@@ -1287,7 +1417,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
       dob,
       exp,
       phone: '',
-      facePhotoBase64: maleAvatar,
+      facePhotoBase64: null,
       raw: `OCR Loose Parsed from Passport:\nPassport No: ${passportNo}\nNationality: ${nationality}\nDOB: ${dob}\nExpiry: ${exp}`
     };
   }
@@ -1313,21 +1443,12 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
   let detectedNat = 'International';
   let detectedName = '';
 
-  // Extract ID / Passport Number from text (filter out MRZ lines to prevent false matching QID from MRZ numbers)
-  const qidLines = ocrText.split('\n');
-  const nonMrzTextForQid = qidLines.filter(l => {
-    const clean = l.replace(/\s/g, '').toUpperCase();
-    const isMrzCandidate = (clean.startsWith('P') || clean.startsWith('V') || clean.match(/^[A-Z0-9<]{9,}\d/)) && clean.length >= 20;
-    const hasLowercase = /[a-z]/.test(l);
-    const hasPunct = /[,.?@#$!%&*()_+={}\[\]]/.test(l);
-    return !(isMrzCandidate && !hasLowercase && !hasPunct);
-  }).join('\n');
-
-  const qidMatch = nonMrzTextForQid.match(/\b([123][0-9OoIliT]{10})\b/) || nonMrzTextForQid.match(/([123][0-9OoIliT]{10})/);
+  // Extract ID / Passport Number from text
+  const qidMatch = extractQidNumberFromText(ocrText);
   if (qidMatch) {
-    detectedId = qidMatch[1].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+    detectedId = qidMatch;
     detectedDocType = 'QID';
-    detectedNat = 'Qatari';
+    detectedNat = extractQidNationality(ocrText, qidMatch.substring(3, 6));
   } else {
     const loosePassNo = extractPassportNumberLoosely(ocrText);
     if (loosePassNo) {
@@ -1363,8 +1484,11 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
     }
   }
 
-  // Extract Name using our high-quality helper
-  detectedName = extractNameWithFallback(ocrText);
+  // Extract Name using QID-aware helper when applicable
+  const rawName = (detectedDocType === 'QID' || docType === 'QID')
+    ? (extractQidNameFromText(ocrText) || extractNameWithFallback(ocrText))
+    : extractNameWithFallback(ocrText);
+  detectedName = cleanExtractedName(rawName);
 
   // Extract Dates
   const foundDates = extractDates(ocrText);
@@ -1413,14 +1537,12 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
     detectedNat = extractNationality('', ocrText);
   }
 
-  // Final clean fallbacks if still empty
-  if (!detectedId) {
-    const ext = path.extname(fileName);
-    const baseName = path.basename(fileName, ext);
-    detectedId = baseName.replace(/[^A-Za-z0-9]/g, '').trim().toUpperCase() || 'UNKNOWN';
+  // Final clean fallbacks if still empty — never use filename as ID number
+  if (!detectedId || looksLikeFilename(detectedId, fileName)) {
+    detectedId = docType === 'QID' ? '' : (detectedId && !looksLikeFilename(detectedId, fileName) ? detectedId : '');
   }
-  if (!detectedName) {
-    detectedName = detectedDocType === 'QID' ? 'Uploaded QID Holder' : 'Uploaded Passport Holder';
+  if (!detectedName || PLACEHOLDER_NAMES.has(detectedName)) {
+    detectedName = docType === 'QID' ? 'Uploaded QID Holder' : 'Uploaded Passport Holder';
   }
 
   return {
@@ -1431,7 +1553,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
     dob: detectedDob,
     exp: detectedExp,
     phone: '',
-    facePhotoBase64: maleAvatar,
+    facePhotoBase64: null,
     raw: `File: ${fileName}\nType: ${detectedDocType}\nOCR Text Extracted:\n${ocrText || '(No text detected)'}`
   };
 };
@@ -1465,175 +1587,141 @@ const performVisionApiOcr = async (base64Content) => {
   return null;
 };
 
-// Helper to detect 2D boundaries of an ID card in an image (uses variance-based scan)
-const detectCardBounds = async (bufferOrPath) => {
-  try {
-    let buffer = bufferOrPath;
-    if (typeof bufferOrPath === 'string') {
-      buffer = fs.readFileSync(bufferOrPath);
-    }
-    const image = sharp(buffer);
-    const metadata = await image.metadata();
-    const width = metadata.width;
-    const height = metadata.height;
-    
-    // Resize to 100x100 for fast pixel variance calculation
-    const scanWidth = 100;
-    const scanHeight = 100;
-    const rawData = await sharp(buffer)
-      .resize(scanWidth, scanHeight, { fit: 'fill' })
-      .raw()
-      .toBuffer();
-      
-    // Calculate column variances
-    const columnVariances = [];
-    for (let x = 0; x < scanWidth; x++) {
-      const pixels = [];
-      for (let y = 0; y < scanHeight; y++) {
-        const idx = (y * scanWidth + x) * 3;
-        const r = rawData[idx];
-        const g = rawData[idx + 1];
-        const b = rawData[idx + 2];
-        const val = 0.299 * r + 0.587 * g + 0.114 * b;
-        pixels.push(val);
-      }
-      const avg = pixels.reduce((sum, v) => sum + v, 0) / scanHeight;
-      const variance = pixels.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / scanHeight;
-      columnVariances.push(variance);
-    }
-    
-    // Calculate row variances
-    const rowVariances = [];
-    for (let y = 0; y < scanHeight; y++) {
-      const pixels = [];
-      for (let x = 0; x < scanWidth; x++) {
-        const idx = (y * scanWidth + x) * 3;
-        const r = rawData[idx];
-        const g = rawData[idx + 1];
-        const b = rawData[idx + 2];
-        const val = 0.299 * r + 0.587 * g + 0.114 * b;
-        pixels.push(val);
-      }
-      const avg = pixels.reduce((sum, v) => sum + v, 0) / scanWidth;
-      const variance = pixels.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / scanWidth;
-      rowVariances.push(variance);
-    }
-    
-    const threshold = 15;
-    let cardLeftIndex = 0;
-    for (let x = 0; x < scanWidth; x++) {
-      if (columnVariances[x] > threshold) {
-        cardLeftIndex = x;
-        break;
-      }
-    }
-    
-    let cardRightIndex = scanWidth - 1;
-    for (let x = scanWidth - 1; x >= 0; x--) {
-      if (columnVariances[x] > threshold) {
-        cardRightIndex = x;
-        break;
-      }
-    }
-    
-    let cardTopIndex = 0;
-    for (let y = 0; y < scanHeight; y++) {
-      if (rowVariances[y] > threshold) {
-        cardTopIndex = y;
-        break;
-      }
-    }
-    
-    let cardBottomIndex = scanHeight - 1;
-    for (let y = scanHeight - 1; y >= 0; y--) {
-      if (rowVariances[y] > threshold) {
-        cardBottomIndex = y;
-        break;
-      }
-    }
-    
-    const leftPx = Math.round((cardLeftIndex / scanWidth) * width);
-    const rightPx = Math.round((cardRightIndex / scanWidth) * width);
-    const topPx = Math.round((cardTopIndex / scanHeight) * height);
-    const bottomPx = Math.round((cardBottomIndex / scanHeight) * height);
-    
-    return {
-      left: leftPx,
-      right: rightPx,
-      width: rightPx - leftPx,
-      top: topPx,
-      bottom: bottomPx,
-      height: bottomPx - topPx
-    };
-  } catch (err) {
-    console.error('Card bounds detection failed:', err.message);
-    return null;
-  }
+// Helper to detect human skin tones (YCbCr + RGB thresholding)
+const isSkinColor = (r, g, b) => {
+  if (r < 35 || g < 20 || b < 10) return false;
+  if (r <= g && r <= b) return false;
+  const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+  const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+  return cr >= 130 && cr <= 185 && cb >= 72 && cb <= 135;
 };
 
-// Helper to extract/crop guest's face photo from QID/Passport photocopy buffer
+// Robust face extraction for both QID and Passport scans (including flatbed A4 scans, camera photos, and card crops)
 const extractFace = async (bufferOrPath, docType) => {
   try {
     let buffer = bufferOrPath;
-    if (typeof bufferOrPath === 'string') {
-      buffer = fs.readFileSync(bufferOrPath);
-    }
-    // Auto-rotate image based on EXIF tag so coordinates match the visual layout
-    const rotatedImage = sharp(buffer).rotate();
-    const metadata = await rotatedImage.metadata();
-    const width = metadata.width;
-    const height = metadata.height;
+    if (typeof bufferOrPath === 'string') buffer = fs.readFileSync(bufferOrPath);
 
-    let left, top, cropWidth, cropHeight;
+    // Properly rotate EXIF and obtain true dimensions of the rotated pixel buffer
+    const { data: rotBuf, info } = await sharp(buffer).rotate().toBuffer({ resolveWithObject: true });
+    const w = info.width;
+    const h = info.height;
+    if (!w || !h || w < 20 || h < 20) return null;
 
-    if (docType === 'QID') {
-      // Try to dynamically detect card boundaries for high-precision cropping
-      const rotatedBuffer = await rotatedImage.toBuffer();
-      const bounds = await detectCardBounds(rotatedBuffer);
-      
-      if (bounds && bounds.width > width * 0.3 && bounds.height > height * 0.3) {
-        // High-precision crop relative to detected card boundary (shifted left & narrowed)
-        left = Math.max(0, Math.round(bounds.left + bounds.width * 0.015));
-        top = Math.max(0, Math.round(bounds.top + bounds.height * 0.16));
-        cropWidth = Math.min(width - left, Math.round(bounds.width * 0.22));
-        cropHeight = Math.min(height - top, Math.round(bounds.height * 0.58));
-        console.log(`QID High-precision Crop Bounds - Size: ${width}x${height}, Crop: left=${left}, top=${top}, width=${cropWidth}, height=${cropHeight}`);
-      } else {
-        // Fallback to percentage-based crop if bounds are invalid
-        if (width >= height) {
-          left = Math.max(0, Math.round(width * 0.02));
-          top = Math.max(0, Math.round(height * 0.16));
-          cropWidth = Math.min(width - left, Math.round(width * 0.22));
-          cropHeight = Math.min(height - top, Math.round(height * 0.58));
-        } else {
-          left = Math.max(0, Math.round(width * 0.15));
-          top = Math.max(0, Math.round(height * 0.12));
-          cropWidth = Math.min(width - left, Math.round(width * 0.55));
-          cropHeight = Math.min(height - top, Math.round(height * 0.40));
+    // Build 120x80 downsampled skin map for sliding window analysis
+    const gw = 120, gh = 80;
+    const raw = await sharp(rotBuf)
+      .resize(gw, gh, { fit: 'fill' })
+      .toColourspace('srgb')
+      .removeAlpha()
+      .raw()
+      .toBuffer();
+
+    const skin = new Uint8Array(gw * gh);
+    for (let y = 0; y < gh; y++) {
+      for (let x = 0; x < gw; x++) {
+        const idx = (y * gw + x) * 3;
+        if (isSkinColor(raw[idx], raw[idx + 1], raw[idx + 2])) {
+          skin[y * gw + x] = 1;
         }
-        console.log(`QID Standard Percentage Crop - Size: ${width}x${height}, Crop: left=${left}, top=${top}, width=${cropWidth}, height=${cropHeight}`);
-      }
-    } else {
-      if (height > width) {
-        // Portrait scan (vertical spread of passport booklet): photo is in bottom-left
-        left = Math.max(0, Math.round(width * 0.03));
-        top = Math.max(0, Math.round(height * 0.65));
-        cropWidth = Math.min(width - left, Math.round(width * 0.44));
-        cropHeight = Math.min(height - top, Math.round(height * 0.30));
-      } else {
-        // Landscape scan (data page only): photo is on the left side
-        left = Math.max(0, Math.round(width * 0.02));
-        top = Math.max(0, Math.round(height * 0.18));
-        cropWidth = Math.min(width - left, Math.round(width * 0.33));
-        cropHeight = Math.min(height - top, Math.round(height * 0.55));
       }
     }
 
-    console.log(`extractFace Crop Coordinates - Size: ${width}x${height}, Crop: left=${left}, top=${top}, width=${cropWidth}, height=${cropHeight}`);
+    const isLandscape = w >= h;
+    const isQid = docType === 'QID';
 
-    const faceBuffer = await rotatedImage
-      .extract({ left, top, width: cropWidth, height: cropHeight })
-      .jpeg({ quality: 85 })
+    // Window proportions for ID / Passport portrait photo (standard ~3:4 aspect ratio)
+    const winW = Math.max(10, Math.round(gw * (isLandscape ? 0.15 : 0.28)));
+    const winH = Math.max(12, Math.round(gh * (isLandscape ? 0.28 : 0.18)));
+
+    let bestScore = 0;
+    let bestX = -1, bestY = -1;
+
+    for (let y = 0; y <= gh - winH; y++) {
+      for (let x = 0; x <= gw - winW; x++) {
+        let count = 0;
+        for (let dy = 0; dy < winH; dy++) {
+          for (let dx = 0; dx < winW; dx++) {
+            count += skin[(y + dy) * gw + (x + dx)];
+          }
+        }
+        const density = count / (winW * winH);
+        if (density < 0.12) continue;
+
+        const xCenter = (x + winW / 2) / gw;
+        const yCenter = (y + winH / 2) / gh;
+
+        let posWeight = 1.0;
+        if (isQid) {
+          // Qatar ID card portrait is on the right side of the card
+          if (xCenter > 0.55) posWeight *= 1.5;
+          else if (xCenter > 0.40) posWeight *= 1.1;
+          else posWeight *= 0.5;
+
+          if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
+        } else {
+          // Passport portrait is on the left side of the data page
+          if (xCenter < 0.45) posWeight *= 1.5;
+          else if (xCenter < 0.60) posWeight *= 1.1;
+          else posWeight *= 0.5;
+
+          if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
+        }
+
+        const score = density * posWeight;
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestY = y;
+        }
+      }
+    }
+
+    let crop;
+    if (bestX >= 0 && bestScore > 0.16) {
+      // Add generous margin around detected face (20% padding)
+      const padX = Math.round(winW * 0.20);
+      const padY = Math.round(winH * 0.20);
+      const fx = Math.max(0, bestX - padX);
+      const fy = Math.max(0, bestY - padY);
+      const fw = Math.min(gw - fx, winW + padX * 2);
+      const fh = Math.min(gh - fy, winH + padY * 2);
+
+      crop = {
+        left: Math.max(0, Math.round((fx / gw) * w)),
+        top: Math.max(0, Math.round((fy / gh) * h)),
+        width: Math.max(20, Math.round((fw / gw) * w)),
+        height: Math.max(20, Math.round((fh / gh) * h))
+      };
+    } else {
+      // High-accuracy fallback layout if skin detection didn't meet threshold (e.g. grayscale scans)
+      if (isQid) {
+        crop = {
+          left: Math.round(w * (isLandscape ? 0.70 : 0.50)),
+          top: Math.round(h * (isLandscape ? 0.18 : 0.08)),
+          width: Math.round(w * (isLandscape ? 0.26 : 0.45)),
+          height: Math.round(h * (isLandscape ? 0.55 : 0.35))
+        };
+      } else {
+        crop = {
+          left: Math.round(w * 0.04),
+          top: Math.round(h * (isLandscape ? 0.18 : 0.60)),
+          width: Math.round(w * (isLandscape ? 0.35 : 0.45)),
+          height: Math.round(h * (isLandscape ? 0.55 : 0.30))
+        };
+      }
+    }
+
+    // Clamp crop area strictly within image bounds
+    const clampLeft = Math.max(0, Math.min(w - 20, crop.left));
+    const clampTop = Math.max(0, Math.min(h - 20, crop.top));
+    const clampW = Math.max(20, Math.min(w - clampLeft, crop.width));
+    const clampH = Math.max(20, Math.min(h - clampTop, crop.height));
+
+    const faceBuffer = await sharp(rotBuf)
+      .extract({ left: clampLeft, top: clampTop, width: clampW, height: clampH })
+      .resize({ width: 240, height: 240, fit: 'cover', position: 'centre' })
+      .jpeg({ quality: 88 })
       .toBuffer();
 
     return `data:image/jpeg;base64,${faceBuffer.toString('base64')}`;
@@ -1954,145 +2042,124 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       }
     }
 
-    // Helper to execute Tesseract OCR locally and fall back to CDN if offline fails
-    const runOcrOnBuffer = async (procBuffer) => {
-      let ocrRes;
-      const lang = docType === 'QID' ? 'eng+ara' : 'eng';
-      try {
-        console.log(`Attempting local offline Tesseract OCR with ${lang}...`);
-        ocrRes = await Tesseract.recognize(procBuffer, lang, {
-          langPath: path.join(__dirname, '..'),
-          cachePath: path.join(__dirname, '..'),
-          gzip: false
-        });
-      } catch (localErr) {
-        console.warn("Local offline OCR failed, falling back to CDN/network OCR:", localErr.message);
-        ocrRes = await Tesseract.recognize(procBuffer, 'eng');
-      }
-      return ocrRes?.data?.text || '';
+    // Start face crop in parallel while OCR runs (saves ~1-2s)
+    const faceCropPromise = extractFace(buffer, docType);
+
+    const OCR_OPTS = {
+      langPath: path.join(__dirname, '..'),
+      cachePath: path.join(__dirname, '..'),
+      gzip: false,
+      tessedit_pageseg_mode: '6'
     };
 
-    // --- PASS 1: GENTLE PRE-PROCESSING (Best for bold, uneven lighting, and normal text) ---
-    console.log("Pass 1: Processing with Gentle CLAHE + Normalize...");
-    let pass1Buffer;
-    try {
-      pass1Buffer = await sharp(buffer)
-        .resize({ width: 1600, fit: 'inside' })
-        .grayscale()
-        .clahe({ width: 120, height: 120 })
-        .normalize()
-        .toBuffer();
-    } catch (err) {
-      // Fallback if CLAHE fails
+    const runOcrOnBuffer = async (procBuffer, lang = 'eng') => {
       try {
-        pass1Buffer = await sharp(buffer)
-          .resize({ width: 1600, fit: 'inside' })
-          .grayscale()
-          .normalize()
-          .toBuffer();
-      } catch (err2) {
-        pass1Buffer = buffer;
+        const ocrRes = await Tesseract.recognize(procBuffer, lang, OCR_OPTS);
+        return ocrRes?.data?.text || '';
+      } catch (localErr) {
+        console.warn('Local OCR failed, retrying eng:', localErr.message);
+        try {
+          const ocrRes = await Tesseract.recognize(procBuffer, 'eng', OCR_OPTS);
+          return ocrRes?.data?.text || '';
+        } catch (e) {
+          return '';
+        }
       }
-    }
+    };
 
-    let ocrText = await runOcrOnBuffer(pass1Buffer);
-    let detectedData = parseDocumentDetails(fileName, docType, ocrText);
-
-    const isIdValid = (id) => id && id !== 'UNKNOWN' && id.replace(/[^a-zA-Z0-9]/g, '').length >= 6;
+    const isQidIdValid = (id) => /^[23]\d{10}$/.test(String(id || '').replace(/\D/g, ''));
+    const isIdValid = (id, dtype) => {
+      if (!id || id === 'UNKNOWN' || looksLikeFilename(id, fileName)) return false;
+      const clean = id.replace(/[^a-zA-Z0-9]/g, '');
+      if (clean.length < 6) return false;
+      if (dtype === 'QID' || docType === 'QID') return isQidIdValid(clean);
+      return true;
+    };
 
     const isResultLowQuality = (data) => {
-      if (!isIdValid(data.idNum)) return true;
-      if (!data.name || data.name === 'Scanned Passport Holder' || data.name === 'Scanned QID Holder') return true;
+      if (!data) return true;
+      if (!isIdValid(data.idNum, data.docType)) return true;
+      if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
       if (data.name.trim().length <= 3) return true;
-      if (data.dob === '1990-01-01' || data.exp === '2030-01-01') return true;
+      if (data.dob === '1990-01-01' && docType === 'QID') return true;
       if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
       return false;
     };
 
-    // --- PASS 2: HARSH PRE-PROCESSING (Fallback for low-contrast text or low-quality Pass 1 results) ---
+    // --- PASS 1: Fast single-pass OCR (eng, normalize+sharpen, 1400px) ---
+    console.log('Pass 1: Fast OCR...');
+    let pass1Buffer;
+    try {
+      pass1Buffer = await sharp(buffer)
+        .rotate()
+        .resize({ width: 1400, fit: 'inside', withoutEnlargement: true })
+        .grayscale()
+        .normalize()
+        .sharpen({ sigma: 1 })
+        .toBuffer();
+    } catch (err) {
+      pass1Buffer = buffer;
+    }
+
+    let ocrText = await runOcrOnBuffer(pass1Buffer, 'eng');
+    let detectedData = parseDocumentDetails(fileName, docType, ocrText);
+
+    // --- PASS 2: Contrast boost only if Pass 1 failed (QID uploads) ---
     if (isResultLowQuality(detectedData)) {
-      console.log("Pass 1 returned low-quality result. Running Pass 2 with Contrast Boost + Sharpen...");
+      console.log('Pass 2: Contrast boost OCR...');
       let pass2Buffer;
       try {
         pass2Buffer = await sharp(buffer)
-          .resize({ width: 1600, fit: 'inside' })
+          .rotate()
+          .resize({ width: 1600, fit: 'inside', withoutEnlargement: true })
           .grayscale()
           .normalize()
-          .linear(1.4, -20)
+          .linear(1.5, -30)
           .sharpen({ sigma: 1.5, m1: 1.5, m2: 3 })
           .toBuffer();
       } catch (err) {
-        pass2Buffer = buffer;
+        pass2Buffer = pass1Buffer;
       }
-
-      const ocrTextPass2 = await runOcrOnBuffer(pass2Buffer);
+      const ocrTextPass2 = await runOcrOnBuffer(pass2Buffer, 'eng');
       const detectedDataPass2 = parseDocumentDetails(fileName, docType, ocrTextPass2);
-      
-      if (!isResultLowQuality(detectedDataPass2) || (isIdValid(detectedDataPass2.idNum) && !isIdValid(detectedData.idNum))) {
-        console.log("Pass 2 successfully extracted higher-quality result:", detectedDataPass2.idNum, detectedDataPass2.name);
+      if (!isResultLowQuality(detectedDataPass2) ||
+          (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType))) {
         detectedData = detectedDataPass2;
       }
     }
 
-    // --- PASS 3: BILINGUAL FALLBACK FOR PASSPORTS (Checks if the document is actually a QID card) ---
-    if (docType === 'Passport' && !isIdValid(detectedData.idNum)) {
-      console.log("Pass 2 failed to extract a valid Passport ID. Running Pass 3 with eng+ara to check for QID layout...");
-      let pass3Buffer;
-      try {
-        pass3Buffer = await sharp(buffer)
-          .resize({ width: 2400, fit: 'inside' })
-          .grayscale()
-          .clahe({ width: 150, height: 150 })
-          .normalize()
-          .toBuffer();
-      } catch (err) {
-        pass3Buffer = buffer;
-      }
-
-      let ocrTextPass3 = '';
-      try {
-        const ocrRes = await Tesseract.recognize(pass3Buffer, 'eng+ara', {
-          langPath: path.join(__dirname, '..'),
-          cachePath: path.join(__dirname, '..'),
-          gzip: false
-        });
-        ocrTextPass3 = ocrRes?.data?.text || '';
-      } catch (localErr) {
-        try {
-          const ocrRes = await Tesseract.recognize(pass3Buffer, 'eng');
-          ocrTextPass3 = ocrRes?.data?.text || '';
-        } catch (e) {}
-      }
-
+    // --- PASS 3: Passport-only QID cross-check ---
+    if (docType === 'Passport' && !isIdValid(detectedData.idNum, detectedData.docType)) {
+      console.log('Pass 3: Checking if document is QID...');
+      const ocrTextPass3 = await runOcrOnBuffer(pass1Buffer, 'eng');
       const detectedDataPass3 = parseDocumentDetails(fileName, 'QID', ocrTextPass3);
-      if (isIdValid(detectedDataPass3.idNum) && detectedDataPass3.docType === 'QID') {
-        console.log("Pass 3 successfully detected that document is actually a QID with ID:", detectedDataPass3.idNum);
+      if (isIdValid(detectedDataPass3.idNum, 'QID') && detectedDataPass3.docType === 'QID') {
         detectedData = detectedDataPass3;
       }
     }
 
-    // 4. Crop guest's face photo from document photocopy
-    console.log("Extracting guest face image from document photocopy...");
-    const croppedFace = await extractFace(buffer, detectedData.docType);
+    // Await parallel face crop
+    console.log('Applying face crop...');
+    const croppedFace = await faceCropPromise;
     if (croppedFace) {
       detectedData.facePhotoBase64 = croppedFace;
     }
 
-    // Flag as low quality if we couldn't parse a valid ID number or if name was defaulted/empty
-    detectedData.lowQuality = !isIdValid(detectedData.idNum) || 
-                             detectedData.name === 'Scanned QID Holder' || 
-                             detectedData.name === 'Scanned Passport Holder' || 
-                             !detectedData.name ||
-                             detectedData.name.trim().length <= 3;
+    detectedData.lowQuality = isResultLowQuality(detectedData) ||
+      PLACEHOLDER_NAMES.has(detectedData.name);
 
     return detectedData;
 
   } catch (ocrErr) {
     console.error('OCR Extraction failed:', ocrErr.message);
     const fallbackData = parseDocumentDetails(fileName, docType, '');
-    const croppedFace = await extractFace(filePathOrBuffer, fallbackData.docType);
-    if (croppedFace) {
-      fallbackData.facePhotoBase64 = croppedFace;
+    if (looksLikeFilename(fallbackData.idNum, fileName)) fallbackData.idNum = '';
+    try {
+      const faceInput = typeof filePathOrBuffer === 'string' ? filePathOrBuffer : filePathOrBuffer;
+      const croppedFace = await extractFace(faceInput, docType);
+      if (croppedFace) fallbackData.facePhotoBase64 = croppedFace;
+    } catch (faceErr) {
+      console.warn('Face crop in fallback failed:', faceErr.message);
     }
     fallbackData.lowQuality = true;
     return fallbackData;

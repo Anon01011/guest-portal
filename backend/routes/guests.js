@@ -671,19 +671,28 @@ router.post('/scan-detect', async (req, res) => {
       }
     }
 
-    // Helper to find the newest valid scan image in the scanner folder
-    const getLatestScanFile = (folder) => {
+    // Helper to find the newest valid scan image in the scanner folder.
+    // maxAgeSeconds: only return files modified within this window (default 300s = 5 min).
+    // Set to 0 to disable age filtering (pick any image in folder).
+    const getLatestScanFile = (folder, maxAgeSeconds = 300) => {
       if (!fs.existsSync(folder)) return null;
       const validExts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff'];
+      const nowMs = Date.now();
+      const cutoffMs = maxAgeSeconds > 0 ? nowMs - (maxAgeSeconds * 1000) : 0;
       try {
         const files = fs.readdirSync(folder);
         const imageFiles = [];
         for (const file of files) {
           const ext = path.extname(file).toLowerCase();
-          if (validExts.includes(ext)) {
-            const filePath = path.join(folder, file);
+          if (!validExts.includes(ext)) continue;
+          const filePath = path.join(folder, file);
+          try {
             const stats = fs.statSync(filePath);
+            // Skip files older than our cutoff window (stale/leftover from previous sessions)
+            if (maxAgeSeconds > 0 && stats.mtimeMs < cutoffMs) continue;
             imageFiles.push({ path: filePath, name: file, mtime: stats.mtimeMs });
+          } catch {
+            // skip unreadable files
           }
         }
         imageFiles.sort((a, b) => b.mtime - a.mtime);
@@ -695,9 +704,15 @@ router.post('/scan-detect', async (req, res) => {
 
     let targetScanFile = getLatestScanFile(scannerFolder);
     let scanSource = targetScanFile ? 'folder' : '';
+    let wiaError = null;
 
-    // Step A: If no recent scan file in folder and a scanner is selected, attempt direct WIA scan
-    if (!targetScanFile && selectedScanner && !selectedScanner.startsWith('twain_')) {
+    // Step A: If no recent scan file in folder and a WIA device is selected, attempt direct WIA scan.
+    // TWAIN and PnP devices cannot be commanded directly — they use folder-watch mode only.
+    const isWiaDevice = selectedScanner &&
+      !selectedScanner.startsWith('twain_') &&
+      !selectedScanner.startsWith('pnp_') &&
+      !selectedScanner.startsWith('warning_');
+    if (!targetScanFile && isWiaDevice) {
       const scanFile = path.join(scannerFolder, `Scan_${Date.now()}.jpg`);
       try {
         console.log(`Triggering direct hardware scan on device: ${selectedScanner}...`);
@@ -707,11 +722,16 @@ router.post('/scan-detect', async (req, res) => {
           scanSource = 'hardware';
         }
       } catch (scanErr) {
-        console.warn('Direct hardware trigger skipped or failed:', scanErr.message);
+        // Trim the raw PowerShell error to a clean 1-line summary (max 200 chars)
+        // The full dump can be hundreds of chars long — don't send it all to the UI
+        const rawMsg = (scanErr.message || '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+        const firstSentence = rawMsg.split(/[.;+`]/).find(s => s.trim().length > 10) || rawMsg;
+        wiaError = firstSentence.trim().slice(0, 200);
+        console.warn('Direct hardware trigger failed:', scanErr.message);
       }
     }
 
-    // Step B: Check scanner folder again
+    // Step B: Check scanner folder again (catches files placed there during WIA attempt or by native scanner software)
     if (!targetScanFile) {
       targetScanFile = getLatestScanFile(scannerFolder);
       if (targetScanFile) {
@@ -721,18 +741,24 @@ router.post('/scan-detect', async (req, res) => {
 
     // Step C: If NEITHER folder file nor direct scan succeeded, retrieve scanner list and return 412
     if (!targetScanFile) {
+      // Always fetch available scanners so the config modal can show them regardless of error type
       const availableScanners = await scanner.listScanners();
       if (availableScanners.length === 0) {
         return res.status(412).json({
           error: 'NO_HARDWARE_FOUND',
-          message: 'No physical scanner hardware or scan files detected. Please scan a document into C:\\ScannerOutput, or use Camera/Upload scan.',
-          scanners: []
+          message: wiaError
+            ? `Scanner hardware found but scan failed: ${wiaError}. Please place the scanned document image directly into the folder: ${scannerFolder}`
+            : `No physical scanner hardware or scan files detected. Please scan a document into ${scannerFolder}, or use Camera/Upload scan.`,
+          scanners: [],
+          scannerFolder
         });
       }
       return res.status(412).json({
         error: 'NO_SCAN_FILE_FOUND',
-        message: 'No document image found in scanner output folder (C:\\ScannerOutput) or connected scanner.',
-        scanners: availableScanners
+        message: `No document image found in scanner output folder (${scannerFolder}). Please insert the document and scan it, then click Scan again.`,
+        scanners: availableScanners,
+        scannerFolder,
+        wiaError: wiaError || null
       });
     }
 
