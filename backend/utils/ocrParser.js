@@ -1083,18 +1083,27 @@ const cleanExtractedName = (str) => {
   let n = normalizeLatinName(str);
   n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '').trim();
   n = n.replace(/\s+(?:NAME|NAM|AME)\s*$/i, '').trim();
-  // Drop trailing single-letter OCR noise (e.g. "PUTHOOR B")
-  n = n.replace(/\s+[A-Z]$/i, '').trim();
-  return n;
+  // Only drop trailing single-letter noise when it is truly isolated (not a valid 2-letter suffix like AL, BIN, MD)
+  const KEEP_SUFFIXES = new Set(['AL', 'BIN', 'ABU', 'MD', 'DR', 'MR', 'MS']);
+  const parts = n.split(/\s+/);
+  if (parts.length > 2) {
+    const last = parts[parts.length - 1];
+    if (last.length === 1 && !KEEP_SUFFIXES.has(last)) {
+      n = parts.slice(0, -1).join(' ');
+    }
+  }
+  return n.trim();
 };
 
 const scoreLatinName = (str) => {
   const normalized = normalizeLatinName(str);
   if (!normalized || normalized.length < 5) return 0;
   const words = normalized.split(/\s+/).filter(w => w.length >= 2);
-  if (words.length < 2) return 0;
+  // Allow single-word names common in Arabic naming (e.g. ABDULRAHMAN)
+  if (words.length < 1) return 0;
   if (words.some(w => QID_HEADER_WORDS.has(w))) return 0;
   if (/\d/.test(str)) return 0;
+  // Boost multi-word names (more likely to be real), but don't require it
   return words.length * 15 + Math.min(normalized.length, 45);
 };
 
@@ -1662,9 +1671,11 @@ const extractFace = async (bufferOrPath, docType) => {
     const isLandscape = w >= h;
     const isQid = docType === 'QID';
 
-    // Window proportions for ID / Passport portrait photo (standard ~3:4 aspect ratio)
-    const winW = Math.max(10, Math.round(gw * (isLandscape ? 0.15 : 0.28)));
-    const winH = Math.max(12, Math.round(gh * (isLandscape ? 0.28 : 0.18)));
+    // Window proportions for portrait photo detection.
+    // Larger windows work better on high-res dedicated scanner output (2000px+).
+    // QID portrait zone is roughly 25% wide x 40% tall; Passport is ~20% wide x 45% tall.
+    const winW = Math.max(12, Math.round(gw * (isLandscape ? 0.20 : 0.30)));
+    const winH = Math.max(14, Math.round(gh * (isLandscape ? 0.40 : 0.22)));
 
     let bestScore = 0;
     let bestX = -1, bestY = -1;
@@ -1728,20 +1739,35 @@ const extractFace = async (bufferOrPath, docType) => {
         height: Math.max(20, Math.round((fh / gh) * h))
       };
     } else {
-      // High-accuracy fallback layout if skin detection didn't meet threshold (e.g. grayscale scans)
+      // Hardcoded fallback crop zones based on standard ID card layouts.
+      // QID (Qatar ID) landscape: photo is in the TOP-RIGHT quadrant (~60-90% x, 10-85% y)
+      // QID portrait orientation (some scanner outputs): photo is TOP-LEFT (~0-45% x, 5-50% y)
+      // Passport data page: photo is LEFT side (~0-35% x, 15-70% y)
       if (isQid) {
-        crop = {
-          left: Math.round(w * (isLandscape ? 0.70 : 0.50)),
-          top: Math.round(h * (isLandscape ? 0.18 : 0.08)),
-          width: Math.round(w * (isLandscape ? 0.26 : 0.45)),
-          height: Math.round(h * (isLandscape ? 0.55 : 0.35))
-        };
+        if (isLandscape) {
+          // Landscape QID — photo top-right corner
+          crop = {
+            left:   Math.round(w * 0.62),
+            top:    Math.round(h * 0.08),
+            width:  Math.round(w * 0.32),
+            height: Math.round(h * 0.82)
+          };
+        } else {
+          // Portrait QID — photo is upper portion, slight left-of-centre
+          crop = {
+            left:   Math.round(w * 0.04),
+            top:    Math.round(h * 0.04),
+            width:  Math.round(w * 0.50),
+            height: Math.round(h * 0.42)
+          };
+        }
       } else {
+        // Passport — photo always on the left side of the data page
         crop = {
-          left: Math.round(w * 0.04),
-          top: Math.round(h * (isLandscape ? 0.18 : 0.60)),
-          width: Math.round(w * (isLandscape ? 0.35 : 0.45)),
-          height: Math.round(h * (isLandscape ? 0.55 : 0.30))
+          left:   Math.round(w * 0.03),
+          top:    Math.round(h * (isLandscape ? 0.15 : 0.55)),
+          width:  Math.round(w * (isLandscape ? 0.32 : 0.45)),
+          height: Math.round(h * (isLandscape ? 0.60 : 0.32))
         };
       }
     }
@@ -1794,11 +1820,12 @@ const parseRegulaResponse = (data) => {
     name: '',
     idNum: '',
     docType: 'Passport',
-    nationality: '',
+    // Use nat/exp/raw to match the field names expected by the rest of the system
+    nat: '',
     dob: '',
-    expiryDate: '',
+    exp: '',
     facePhotoBase64: null,
-    rawOcrText: JSON.stringify(data)
+    raw: JSON.stringify(data).substring(0, 500) // truncated for logging
   };
 
   if (!data || !data.ContainerList || !Array.isArray(data.ContainerList.List)) {
@@ -1812,59 +1839,105 @@ const parseRegulaResponse = (data) => {
     // Text container (result_type = 3)
     if (container.result_type === 3 && container.Text && Array.isArray(container.Text.fieldList)) {
       for (const field of container.Text.fieldList) {
-        const val = field.valueList?.[0]?.value;
+        // Prefer the highest-confidence value (source 3 = MRZ, source 1 = visual)
+        const val = (field.valueList || [])
+          .filter(v => v && v.value)
+          .sort((a, b) => (b.pageIndex || 0) - (a.pageIndex || 0))[0]?.value;
         if (!val) continue;
 
-        const name = field.fieldName;
-        if (name === 'Surname' || name === 'Primary Identifier') {
-          surname = val;
-        } else if (name === 'Given Names' || name === 'Secondary Identifier') {
-          givenNames = val;
-        } else if (name === 'Document Number') {
-          result.idNum = val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-        } else if (name === 'Date of Birth') {
-          result.dob = formatRegulaDate(val);
-        } else if (name === 'Date of Expiry') {
-          result.expiryDate = formatRegulaDate(val);
-        } else if (name === 'Nationality') {
-          result.nationality = val.toUpperCase();
-        } else if (name === 'Personal Number') {
-          const cleanVal = val.replace(/[^a-zA-Z0-9]/g, '');
-          if (cleanVal.startsWith('2') || cleanVal.startsWith('3')) {
-            result.idNum = cleanVal;
-            result.docType = 'QID';
+        const fname = field.fieldName;
+        switch (fname) {
+          case 'Surname':
+          case 'Primary Identifier':
+            if (val.length > surname.length) surname = val.trim();
+            break;
+          case 'Given Names':
+          case 'Secondary Identifier':
+            if (val.length > givenNames.length) givenNames = val.trim();
+            break;
+          case 'Document Number':
+            result.idNum = val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+            break;
+          case 'Date of Birth':
+            result.dob = formatRegulaDate(val);
+            break;
+          case 'Date of Expiry':
+          case 'Date of Expiration':
+            result.exp = formatRegulaDate(val);
+            break;
+          case 'Nationality':
+          case 'Nationality Code':
+            result.nat = val.toUpperCase();
+            break;
+          case 'Personal Number':
+          case 'Personal No':
+          case 'ID Number': {
+            const cleanVal = val.replace(/[^a-zA-Z0-9]/g, '');
+            // QID numbers start with 2 or 3 and are 11 digits
+            if (/^[23]\d{10}$/.test(cleanVal)) {
+              result.idNum = cleanVal;
+              result.docType = 'QID';
+            } else if (cleanVal && !result.idNum) {
+              result.idNum = cleanVal.toUpperCase();
+            }
+            break;
           }
-        } else if (name === 'Document Class Code') {
-          if (val === 'ID' || val === 'I') {
-            result.docType = 'QID';
-          }
+          case 'Document Class Code':
+          case 'Document Type':
+            if (val === 'ID' || val === 'I' || val === 'ID1' || val === 'ID2' || val === 'ID3') {
+              result.docType = 'QID';
+            }
+            break;
+          case 'Sex':
+          case 'Gender':
+            // Ignored but don't crash
+            break;
+          default:
+            break;
         }
       }
     }
 
     // Images container (result_type = 5)
+    // Check fieldType 201 (Portrait), 202 (Fingerprint area / live photo), 203 (Ghost),
+    // 204 (Barcode), and fieldName-based fallback — different Regula/ARH firmware versions
+    // use different codes. We take the FIRST non-null portrait we find.
     if (container.result_type === 5 && container.Images && Array.isArray(container.Images.fieldList)) {
       for (const field of container.Images.fieldList) {
-        if (field.fieldType === 201) { // Portrait
-          const base64 = field.valueList?.[0]?.value;
-          if (base64) {
-            result.facePhotoBase64 = `data:image/jpeg;base64,${base64}`;
+        if (result.facePhotoBase64) break; // already have a portrait
+        const isPortraitType = [201, 202, 203, 220, 251].includes(field.fieldType);
+        const isPortraitName = /portrait|photo|face|image/i.test(field.fieldName || '');
+        if (isPortraitType || isPortraitName) {
+          // valueList may have multiple entries; pick the highest resolution one
+          const best = (field.valueList || [])
+            .filter(v => v && v.value && v.value.length > 100)
+            .sort((a, b) => (b.value || '').length - (a.value || '').length)[0];
+          if (best) {
+            // Value may already include data:image prefix or be raw base64
+            const raw = best.value.trim();
+            result.facePhotoBase64 = raw.startsWith('data:')
+              ? raw
+              : `data:image/jpeg;base64,${raw}`;
           }
         }
       }
     }
   }
 
-  // Combine names
+  // Combine names — given names first (standard Western + Arabic order)
   if (givenNames || surname) {
-    result.name = [givenNames, surname].filter(Boolean).join(' ').trim().toUpperCase();
+    result.name = [givenNames, surname].filter(Boolean).join(' ').trim().toUpperCase()
+      // Collapse multiple spaces, remove stray punctuation
+      .replace(/[<>_]/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  // Fallback check: if ID starts with 2 or 3 and is 11 digits, it's a QID
-  if (result.idNum && result.idNum.length === 11 && (result.idNum.startsWith('2') || result.idNum.startsWith('3'))) {
+  // Fallback: if ID starts with 2 or 3 and is 11 digits, it's definitely a QID
+  if (result.idNum && /^[23]\d{10}$/.test(result.idNum)) {
     result.docType = 'QID';
   }
 
+  // If we got a valid result, return it; otherwise null
+  if (!result.name && !result.idNum) return null;
   return result;
 };
 
@@ -2051,6 +2124,15 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
           const parsed = parseRegulaResponse(respData);
           if (parsed && (parsed.idNum || parsed.name)) {
             console.log('Secure Web Service scan processed successfully:', parsed.idNum, parsed.name);
+            // If the scanner API didn't return a portrait, extract it from the raw image
+            if (!parsed.facePhotoBase64) {
+              try {
+                const croppedFace = await extractFace(buffer, parsed.docType);
+                if (croppedFace) parsed.facePhotoBase64 = croppedFace;
+              } catch (_) {}
+            }
+            parsed.phone = parsed.phone || '';
+            parsed.lowQuality = !parsed.idNum || !parsed.name || PLACEHOLDER_NAMES.has(parsed.name);
             return parsed;
           }
         } else {
