@@ -268,18 +268,20 @@ const triggerScan = async (deviceId, outputPath) => {
     }
     $item = $scanner.Items.Item(1)
     
-    # Configure high-accuracy passport/ID scanning properties (Color, 300 DPI)
+    # Configure ID/Passport scanning properties
+    # 150 DPI: optimal OCR resolution for credit-card-sized IDs (~1000px wide) — 4x faster than 300 DPI.
+    # 300 DPI is only needed for full A4 pages; ID cards have large text that reads perfectly at 150 DPI.
     try {
-        # WIA_IPS_CUR_INTENT (6146): 1 = Color, 2 = Grayscale
+        # WIA_IPS_CUR_INTENT (6146): 1 = Color
         $item.Properties.Item("6146").Value = 1
     } catch {}
     try {
-        # WIA_IPS_XRES (6147): 300 DPI
-        $item.Properties.Item("6147").Value = 300
+        # WIA_IPS_XRES (6147): 150 DPI
+        $item.Properties.Item("6147").Value = 150
     } catch {}
     try {
-        # WIA_IPS_YRES (6148): 300 DPI
-        $item.Properties.Item("6148").Value = 300
+        # WIA_IPS_YRES (6148): 150 DPI
+        $item.Properties.Item("6148").Value = 150
     } catch {}
     
     # Try JPEG, PNG, BMP, TIFF, and native format transfers sequentially to support all hardware drivers
@@ -315,8 +317,8 @@ const triggerScan = async (deviceId, outputPath) => {
     Write-Output "SUCCESS"
   `;
 
-  // 30 second timeout for physical scan — scanner hardware can be slow to respond
-  return await runPowerShell(script, 30000);
+  // 20s timeout for physical scan — 150 DPI transfers much faster than 300 DPI
+  return await runPowerShell(script, 20000);
 };
 
 /**

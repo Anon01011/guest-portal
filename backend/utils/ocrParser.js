@@ -1600,10 +1600,14 @@ const isSkinColor = (r, g, b) => {
 const extractFace = async (bufferOrPath, docType) => {
   try {
     let buffer = bufferOrPath;
-    if (typeof bufferOrPath === 'string') buffer = fs.readFileSync(bufferOrPath);
+    const isFilePath = typeof bufferOrPath === 'string';
+    if (isFilePath) buffer = fs.readFileSync(bufferOrPath);
 
-    // Properly rotate EXIF and obtain true dimensions of the rotated pixel buffer
-    const { data: rotBuf, info } = await sharp(buffer).rotate().toBuffer({ resolveWithObject: true });
+    // Rotate EXIF only when reading from a file path (the OCR pipeline pre-rotates buffers).
+    // Skipping redundant rotate() saves ~1s per face-crop call.
+    const { data: rotBuf, info } = isFilePath
+      ? await sharp(buffer).rotate().toBuffer({ resolveWithObject: true })
+      : await sharp(buffer).toBuffer({ resolveWithObject: true });
     const w = info.width;
     const h = info.height;
     if (!w || !h || w < 20 || h < 20) return null;
@@ -1678,7 +1682,9 @@ const extractFace = async (bufferOrPath, docType) => {
     }
 
     let crop;
-    if (bestX >= 0 && bestScore > 0.16) {
+    // Lower threshold to 0.10 so grayscale/lower-DPI scans from other devices
+    // still get a face region detected instead of always falling back to fixed crop.
+    if (bestX >= 0 && bestScore > 0.10) {
       // Add generous margin around detected face (20% padding)
       const padX = Math.round(winW * 0.20);
       const padY = Math.round(winH * 0.20);
@@ -2042,12 +2048,14 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       }
     }
 
-    // Start face crop in parallel while OCR runs (saves ~1-2s)
-    const faceCropPromise = extractFace(buffer, docType);
+    // Resolve Tesseract lang data path — prefer local backend copy (eng.traineddata),
+    // fall back to the tesseract.js bundled traineddata so it works on any device.
+    const localLangDir = path.join(__dirname, '..');
+    const localEngData = path.join(localLangDir, 'eng.traineddata');
+    const langDir = fs.existsSync(localEngData) ? localLangDir : undefined;
 
     const OCR_OPTS = {
-      langPath: path.join(__dirname, '..'),
-      cachePath: path.join(__dirname, '..'),
+      ...(langDir ? { langPath: langDir, cachePath: langDir } : {}),
       gzip: false,
       tessedit_pageseg_mode: '6'
     };
@@ -2081,37 +2089,62 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       if (!isIdValid(data.idNum, data.docType)) return true;
       if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
       if (data.name.trim().length <= 3) return true;
-      if (data.dob === '1990-01-01' && docType === 'QID') return true;
+      // A valid QID number + name is a usable result even without a DOB.
       if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
       return false;
     };
 
-    // --- PASS 1: Fast single-pass OCR (eng, normalize+sharpen, 1400px) ---
+    // ── STEP 0: Rotate ONCE (EXIF) + smart DPI-aware resize ─────────────────────
+    // High-DPI scans (600dpi) produce huge images (3000x4000+) that make Tesseract
+    // extremely slow. We auto-detect oversized images and scale down to ~1200px wide
+    // (Tesseract sweet spot). Low-DPI / small images are left at native resolution.
+    // We do this ONE TIME and reuse `rotatedBuffer` across all passes — no re-rotate.
+    let rotatedBuffer;
+    try {
+      const rawMeta = await sharp(buffer).metadata();
+      const rawW = rawMeta.width || 0;
+      const rawH = rawMeta.height || 0;
+      // Target 1200px wide — optimal for Tesseract speed vs accuracy.
+      // For very small images (<900px) we still upscale slightly (1000px) to help OCR.
+      const targetW = Math.max(rawW, rawH) < 900 ? 1000 : 1200;
+      rotatedBuffer = await sharp(buffer)
+        .rotate()  // auto-rotate by EXIF — only needed here
+        .resize({ width: targetW, fit: 'inside', withoutEnlargement: false })
+        .toBuffer();
+      const meta = await sharp(rotatedBuffer).metadata();
+      console.log(`Image: ${rawW}x${rawH} → rotated+resized to ${meta.width}x${meta.height} (target ${targetW}px)`);
+    } catch (err) {
+      console.warn('Rotate/resize failed, using raw buffer:', err.message);
+      rotatedBuffer = buffer;
+    }
+
+    // ── STEP 1: Start face crop in PARALLEL with OCR pre-processing ──────────────
+    // We pass the already-rotated buffer so extractFace doesn't re-rotate.
+    const faceCropPromise = extractFace(rotatedBuffer, docType);
+
+    // ── PASS 1: Normalize + sharpen on pre-rotated buffer (fast, ~5-8s) ─────────
     console.log('Pass 1: Fast OCR...');
     let pass1Buffer;
     try {
-      pass1Buffer = await sharp(buffer)
-        .rotate()
-        .resize({ width: 1400, fit: 'inside', withoutEnlargement: true })
+      pass1Buffer = await sharp(rotatedBuffer)
         .grayscale()
         .normalize()
         .sharpen({ sigma: 1 })
         .toBuffer();
     } catch (err) {
-      pass1Buffer = buffer;
+      pass1Buffer = rotatedBuffer;
     }
 
     let ocrText = await runOcrOnBuffer(pass1Buffer, 'eng');
     let detectedData = parseDocumentDetails(fileName, docType, ocrText);
 
-    // --- PASS 2: Contrast boost only if Pass 1 failed (QID uploads) ---
+    // ── PASS 2: Contrast boost only if Pass 1 failed ─────────────────────────────
+    // Reuses rotatedBuffer (no second rotate) — saves ~3-5s.
     if (isResultLowQuality(detectedData)) {
       console.log('Pass 2: Contrast boost OCR...');
       let pass2Buffer;
       try {
-        pass2Buffer = await sharp(buffer)
-          .rotate()
-          .resize({ width: 1600, fit: 'inside', withoutEnlargement: true })
+        pass2Buffer = await sharp(rotatedBuffer)
           .grayscale()
           .normalize()
           .linear(1.5, -30)
@@ -2125,20 +2158,21 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       if (!isResultLowQuality(detectedDataPass2) ||
           (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType))) {
         detectedData = detectedDataPass2;
+        ocrText = ocrTextPass2; // keep best text for pass 3 reuse
       }
     }
 
-    // --- PASS 3: Passport-only QID cross-check ---
+    // ── PASS 3: Passport-only QID cross-check ────────────────────────────────────
+    // Reuses already-computed ocrText — NO extra Tesseract call needed (saves ~15-20s).
     if (docType === 'Passport' && !isIdValid(detectedData.idNum, detectedData.docType)) {
-      console.log('Pass 3: Checking if document is QID...');
-      const ocrTextPass3 = await runOcrOnBuffer(pass1Buffer, 'eng');
-      const detectedDataPass3 = parseDocumentDetails(fileName, 'QID', ocrTextPass3);
+      console.log('Pass 3: QID cross-check on existing OCR text (no re-scan)...');
+      const detectedDataPass3 = parseDocumentDetails(fileName, 'QID', ocrText);
       if (isIdValid(detectedDataPass3.idNum, 'QID') && detectedDataPass3.docType === 'QID') {
         detectedData = detectedDataPass3;
       }
     }
 
-    // Await parallel face crop
+    // ── AWAIT parallel face crop ──────────────────────────────────────────────────
     console.log('Applying face crop...');
     const croppedFace = await faceCropPromise;
     if (croppedFace) {
