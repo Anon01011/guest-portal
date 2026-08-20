@@ -37,7 +37,8 @@ router.put('/', async (req, res) => {
     selectedScanner, 
     scannerApiUrl, 
     scannerApiUsername, 
-    scannerApiPassword 
+    scannerApiPassword,
+    visionApiKey
   } = req.body;
 
   try {
@@ -77,6 +78,11 @@ router.put('/', async (req, res) => {
     }
     if (scannerApiPassword !== undefined) {
       await saveSetting('scanner_api_password', scannerApiPassword);
+    }
+    // Google Cloud Vision API key (free tier: 1000 req/month)
+    // Stored in DB so it works on all devices without editing .env files.
+    if (visionApiKey !== undefined) {
+      await saveSetting('vision_api_key', visionApiKey.trim());
     }
 
     invalidateSettingsCache();

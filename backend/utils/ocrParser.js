@@ -1558,33 +1558,61 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
   };
 };
 
-const performVisionApiOcr = async (base64Content) => {
-  const apiKey = process.env.VISION_API_KEY;
+// Google Cloud Vision DOCUMENT_TEXT_DETECTION OCR.
+// Free tier: 1000 units/month (https://cloud.google.com/vision/pricing).
+// apiKey can come from process.env.VISION_API_KEY or the DB settings table.
+const performVisionApiOcr = async (base64Content, apiKey) => {
   if (!apiKey) return null;
   try {
-    console.log("Calling Google Cloud Vision API for premium high-accuracy OCR...");
-    const response = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: { content: base64Content },
-            features: [{ type: 'DOCUMENT_TEXT_DETECTION' }]
-          }
-        ]
-      })
-    });
+    console.log('Calling Google Cloud Vision API (free DOCUMENT_TEXT_DETECTION)...');
+    const response = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [
+            {
+              image: { content: base64Content },
+              features: [{ type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1 }]
+            }
+          ]
+        })
+      }
+    );
+
+    // Handle quota / billing errors gracefully — fall through to Tesseract
+    if (response.status === 429 || response.status === 403) {
+      console.warn(`Google Vision API returned ${response.status} (quota/billing). Falling back to local Tesseract.`);
+      return null;
+    }
+
     const result = await response.json();
+
+    // Detect API-level errors (e.g. RESOURCE_EXHAUSTED, invalid key)
+    const apiError = result.error || result.responses?.[0]?.error;
+    if (apiError) {
+      const code = apiError.code || apiError.status || '';
+      if (String(code) === '429' || String(code).includes('EXHAUSTED') || String(code).includes('QUOTA')) {
+        console.warn('Google Vision quota exhausted. Falling back to local Tesseract.');
+      } else {
+        console.warn(`Google Vision API error [${code}]: ${apiError.message || apiError.status}. Falling back to Tesseract.`);
+      }
+      return null;
+    }
+
     const annotation = result.responses?.[0]?.fullTextAnnotation;
     if (annotation && annotation.text) {
-      console.log(`Google Cloud Vision OCR Completed. Extracted length: ${annotation.text.length}`);
+      console.log(`Google Vision OCR done. Text length: ${annotation.text.length} chars.`);
       return annotation.text;
     }
+
+    console.warn('Google Vision returned no text. Falling back to Tesseract.');
+    return null;
   } catch (err) {
-    console.error("Google Cloud Vision API failed:", err.message);
+    console.error('Google Vision API request failed:', err.message, '. Falling back to Tesseract.');
+    return null;
   }
-  return null;
 };
 
 // Helper to detect human skin tones (YCbCr + RGB thresholding)
@@ -2033,19 +2061,43 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       console.warn('Database check or Web Service OCR query failed:', dbErr.message);
     }
 
-    // 1. Try Google Cloud Vision API first if configured
-    if (process.env.VISION_API_KEY) {
-      const base64Image = buffer.toString('base64');
-      const visionText = await performVisionApiOcr(base64Image);
+    // ── 1. Try Google Cloud Vision API (free tier: 1000 req/month) ───────────────
+    // Key is read from DB settings first (configurable in app UI), then .env fallback.
+    // Vision gives much higher OCR accuracy than Tesseract and completes in ~1-2s.
+    let visionApiKey = null;
+    try {
+      const [vkRows] = await db.query(
+        'SELECT setting_value FROM settings WHERE setting_key = "vision_api_key" LIMIT 1'
+      );
+      visionApiKey = vkRows[0]?.setting_value?.trim() || null;
+    } catch (_) {}
+    if (!visionApiKey) visionApiKey = (process.env.VISION_API_KEY || '').trim() || null;
+
+    if (visionApiKey) {
+      // Rotate + resize FIRST so Vision also gets an optimal-sized image
+      let visionBuffer = buffer;
+      try {
+        const rawMeta = await sharp(buffer).metadata();
+        const rawW = rawMeta.width || 0;
+        const rawH = rawMeta.height || 0;
+        const targetW = Math.max(rawW, rawH) < 900 ? 1000 : 1400; // Vision handles up to 4MB base64 fine
+        visionBuffer = await sharp(buffer)
+          .rotate()
+          .resize({ width: targetW, fit: 'inside', withoutEnlargement: false })
+          .toBuffer();
+      } catch (_) {}
+
+      const visionText = await performVisionApiOcr(visionBuffer.toString('base64'), visionApiKey);
       if (visionText) {
         const details = parseDocumentDetails(fileName, docType, visionText);
-        // Crop face from original photocopy
-        const croppedFace = await extractFace(buffer, details.docType);
-        if (croppedFace) {
-          details.facePhotoBase64 = croppedFace;
-        }
+        // Face crop from pre-rotated vision buffer
+        const croppedFace = await extractFace(visionBuffer, details.docType);
+        if (croppedFace) details.facePhotoBase64 = croppedFace;
+        details.lowQuality = !details.idNum || !details.name || PLACEHOLDER_NAMES.has(details.name);
+        console.log(`Vision OCR result: name="${details.name}" id="${details.idNum}"`);
         return details;
       }
+      // Vision failed / quota hit — fall through to Tesseract below
     }
 
     // Resolve Tesseract lang data path — prefer local backend copy (eng.traineddata),

@@ -49,6 +49,8 @@ export default function SettingsOverlay({
   setScannerApiUsername,
   scannerApiPassword,
   setScannerApiPassword,
+  visionApiKey,
+  setVisionApiKey,
   licenseStatus
 }) {
   const [countdown, setCountdown] = React.useState('');
@@ -657,6 +659,34 @@ export default function SettingsOverlay({
               <p className="set-desc" style={{ marginTop: '5px', fontSize: '11px' }}>
                 Provide connection credentials for your scanner's secure local web service or secure network reader API.
               </p>
+            </div>
+
+            {/* Google Cloud Vision Free API Key */}
+            <div style={{ marginTop: '12px', borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingTop: '12px' }}>
+              <label className="pwd-label" style={{ fontWeight: '600', color: '#0f6e56', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <i className="ti ti-brand-google" style={{ fontSize: '15px' }} />
+                Google Cloud Vision API Key <span style={{ fontWeight: '400', fontSize: '10.5px', color: 'var(--text-muted)', marginLeft: '4px' }}>(Free tier · 1,000 scans/month)</span>
+              </label>
+              <div style={{ marginTop: '6px' }}>
+                <div className="pwd-input-wrap">
+                  <i className="ti ti-key pwd-input-icon" />
+                  <input
+                    id="vision-api-key-input"
+                    type="password"
+                    placeholder="AIza... (paste your Google Vision API key)"
+                    value={visionApiKey || ''}
+                    onChange={(e) => setVisionApiKey(e.target.value)}
+                    className="pwd-input"
+                    style={{ fontFamily: 'monospace' }}
+                    autoComplete="off"
+                  />
+                </div>
+                <p className="set-desc" style={{ marginTop: '5px', fontSize: '11px' }}>
+                  When set, Google Vision is used for OCR instead of local Tesseract — much faster and more accurate.
+                  Get a free key at <a href="https://console.cloud.google.com/apis/library/vision.googleapis.com" target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>Google Cloud Console</a> → Enable Vision API → Credentials → API Key.
+                  Falls back to local Tesseract automatically if quota is exceeded.
+                </p>
+              </div>
             </div>
 
             <button

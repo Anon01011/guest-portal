@@ -79,6 +79,7 @@ export default function App() {
   const [scannerApiUrl, setScannerApiUrl] = useState('');
   const [scannerApiUsername, setScannerApiUsername] = useState('');
   const [scannerApiPassword, setScannerApiPassword] = useState('');
+  const [visionApiKey, setVisionApiKey] = useState('');
 
   // Main App State
   const [dashboardDate, setDashboardDate] = useState('');
@@ -311,6 +312,7 @@ export default function App() {
         setScannerApiUrl(data.scanner_api_url || '');
         setScannerApiUsername(data.scanner_api_username || '');
         setScannerApiPassword(data.scanner_api_password || '');
+        setVisionApiKey(data.vision_api_key || '');
 
         // Default dashboard date to operational date if not set yet
         setDashboardDate(prev => prev || data.operational_date);
@@ -340,7 +342,8 @@ export default function App() {
           selectedScanner: scannerId,
           scannerApiUrl: apiUrl,
           scannerApiUsername: apiUsername,
-          scannerApiPassword: apiPassword
+          scannerApiPassword: apiPassword,
+          visionApiKey: visionApiKey
         })
       });
       if (res.ok) {
@@ -2319,6 +2322,8 @@ export default function App() {
             setScannerApiUsername={setScannerApiUsername}
             scannerApiPassword={scannerApiPassword}
             setScannerApiPassword={setScannerApiPassword}
+            visionApiKey={visionApiKey}
+            setVisionApiKey={setVisionApiKey}
           />
         )}
 
