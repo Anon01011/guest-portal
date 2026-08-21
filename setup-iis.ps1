@@ -1140,6 +1140,14 @@ Write-Host "    3. Run: SELECT * FROM guests;                        " -Foregrou
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
 
+# Create Desktop Shortcut for GMP Portal
+try {
+    $shortcutScript = Join-Path $AppRoot "create-desktop-shortcut.ps1"
+    if (Test-Path $shortcutScript) {
+        & $shortcutScript
+    }
+} catch {}
+
 try {
     $openUrl = $ipUrl
     if ([string]::IsNullOrWhiteSpace($openUrl)) { $openUrl = $localUrl }
