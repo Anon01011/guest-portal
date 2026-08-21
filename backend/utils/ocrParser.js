@@ -1003,13 +1003,17 @@ const PLACEHOLDER_NAMES = new Set([
   'Uploaded QID Holder', 'Uploaded Passport Holder'
 ]);
 
-const QID_HEADER_WORDS = new Set(['STATE', 'QATAR', 'CARD', 'RESIDENCY', 'CIVIL', 'REGISTER',
+const QID_HEADER_WORDS = new Set([
+  'STATE', 'QATAR', 'CARD', 'RESIDENCY', 'CIVIL', 'REGISTER',
   'NATIONAL', 'IDENTITY', 'MINISTRY', 'INTERIOR', 'PERMIT', 'WORK', 'PASS', 'HOLDER',
   'DATE', 'BIRTH', 'EXPIRY', 'NATIONALITY', 'GENDER', 'OCCUPATION', 'ADDRESS', 'VALID',
   'ISSUED', 'ISSUE', 'PLACE', 'PHOTO', 'SIGNATURE', 'NUMBER', 'SERIAL', 'BARCODE',
   'PASSPORT', 'SURNAME', 'GIVEN', 'AUTHORITY', 'SEX', 'OFFICIAL', 'OFFICE', 'BEARER',
   'OF', 'THE', 'AND', 'FOR', 'RESIDENT', 'RESIDENCE', 'PERSONAL', 'DOCUMENT', 'DOB',
-  'EXP', 'VALIDITY', 'MOI', 'SPONSOR', 'PROFESSION', 'TYPE', 'ID', 'INDIA', 'PERMIT']);
+  'EXP', 'VALIDITY', 'MOI', 'SPONSOR', 'PROFESSION', 'TYPE', 'ID', 'INDIA', 'PERMIT',
+  'NAME', 'FULL', 'FIRST', 'LAST', 'MIDDLE', 'NOMBRES', 'PRENOMS', 'NOM', 'APELLIDOS',
+  'REPUBLIC', 'GOVERNMENT', 'KINGDOM', 'ARAB', 'ARABIC', 'ENGLISH', 'DETAILS', 'INFORMATION'
+]);
 
 const filterMrzLinesFromText = (ocrText) => {
   return ocrText.split('\n').filter(l => {
@@ -1022,8 +1026,16 @@ const filterMrzLinesFromText = (ocrText) => {
 };
 
 const normalizeQidDigits = (raw) => String(raw || '')
-  .replace(/[OoQqD]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2')
-  .replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/\D/g, '');
+  .replace(/[OoQqD]/g, '0')
+  .replace(/[IliT|!f]/gi, '1')
+  .replace(/[Zz]/gi, '2')
+  .replace(/[Ee]/g, '3')
+  .replace(/[Aa]/g, '4')
+  .replace(/[Ss]/gi, '5')
+  .replace(/[Gg]/g, '6')
+  .replace(/[Tt]/g, '7')
+  .replace(/[Bb]/g, '8')
+  .replace(/\D/g, '');
 
 const isValidQidNumber = (qid) => qid && qid.length === 11 && /^[23]/.test(qid) && /^\d{3}$/.test(qid.substring(3, 6));
 
@@ -1097,7 +1109,7 @@ const cleanExtractedName = (str) => {
 
 const scoreLatinName = (str) => {
   const normalized = normalizeLatinName(str);
-  if (!normalized || normalized.length < 5) return 0;
+  if (!normalized || normalized.length < 3) return 0;
   const words = normalized.split(/\s+/).filter(w => w.length >= 2);
   // Allow single-word names common in Arabic naming (e.g. ABDULRAHMAN)
   if (words.length < 1) return 0;
@@ -1117,16 +1129,24 @@ const extractQidNameFromText = (ocrText) => {
     if (!nameLabelPattern.test(lines[i])) continue;
     const inline = lines[i].replace(/full\s*name/i, '').replace(/\bname\b/i, '').replace(/الاسم/g, '')
       .replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const nextLine = (lines[i + 1] || '').replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const next2 = (lines[i + 2] || '').replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    for (const candidate of [nextLine, next2, inline]) {
+    
+    // Check up to 4 lines after label to bridge Arabic text / blank lines
+    const candidates = [inline];
+    for (let k = 1; k <= 4; k++) {
+      if (i + k < lines.length) {
+        const nextClean = lines[i + k].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (nextClean) candidates.push(nextClean);
+      }
+    }
+
+    for (const candidate of candidates) {
       const score = scoreLatinName(candidate);
       if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(candidate); }
     }
   }
 
   // Qatar Residency Permit prints the full name in the bottom name bar
-  const bottomStart = Math.max(0, Math.floor(lines.length * 0.65));
+  const bottomStart = Math.max(0, Math.floor(lines.length * 0.50));
   for (let i = bottomStart; i < lines.length; i++) {
     const latinChars = (lines[i].match(/[A-Za-z]/g) || []).length;
     const totalChars = lines[i].replace(/\s/g, '').length;
@@ -1210,14 +1230,20 @@ const parseQIDText = (ocrText) => {
     }
   }
 
-  let exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Calculate Expiry Date intelligently
+  const currentYear = new Date().getFullYear();
+  let exp = `${currentYear + 1}-01-01`;
   const expLine = nameLines.find(l => /EXP|EXPIRY|VALI|الصلاحية/i.test(l));
   if (expLine) {
     const lineDates = extractDates(expLine);
     if (lineDates.length > 0) exp = lineDates[0].iso;
-  } else if (foundDates.length >= 2) {
-    const sorted = [...foundDates].sort((a, b) => a.year - b.year);
-    exp = sorted[sorted.length - 1].iso;
+  } else {
+    // Pick the latest date in foundDates that is strictly greater than birthYear + 10
+    const futureDates = foundDates.filter(d => d.year > birthYear + 10);
+    if (futureDates.length > 0) {
+      const sorted = [...futureDates].sort((a, b) => a.year - b.year);
+      exp = sorted[sorted.length - 1].iso;
+    }
   }
 
   const name = cleanExtractedName(extractQidNameFromText(ocrText) || extractNameWithFallback(ocrText)) || 'Scanned QID Holder';
@@ -2223,8 +2249,8 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       if (!isIdValid(data.idNum, data.docType)) return true;
       if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
       if (data.name.trim().length <= 3) return true;
-      // A valid QID number + name is a usable result even without a DOB.
-      if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
+      // Check for actual Tesseract MRZ noise artifacts (3+ repeating K/X/C/L or LKL/CLL noise), NOT normal names like HUSSEIN or HASSAN (which contain 'ss').
+      if (/(?:([KXCL])\1{2,}|LKL|CLL|X[KX]X|<{2,})/i.test(data.name)) return true;
       return false;
     };
 
