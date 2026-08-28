@@ -947,9 +947,34 @@ const parseMRZ = (ocrText) => {
           const fullName = `${aligned.givenNames} ${aligned.surname}`.trim().toUpperCase();
           const nationality = extractNationality(f.nationality, ocrText);
 
+          let strictDocNum = f.documentNumber.toUpperCase();
+          // Z→2 OCR FIX: strict MRZ parser also receives corrupted line2 if Tesseract read Z as 2.
+          // If the document number is purely numeric, check the visual page text for a letter-prefix version.
+          if (/^\d+$/.test(strictDocNum)) {
+            const visualLines = filterMrzLinesFromText(ocrText);
+            const vp = /\b([A-Z][0-9A-Z]{6,8})\b/g;
+            let vm;
+            while ((vm = vp.exec(visualLines)) !== null) {
+              const cand = cleanPassportNumber(vm[1]);
+              if (
+                cand.length >= 6 && cand.length <= 9 &&
+                /[A-Z]/.test(cand)
+              ) {
+                const candDigits = cand.replace(/[^0-9]/g, '');
+                const mrzDigits = strictDocNum.replace(/[^0-9]/g, '');
+                // Z misread as 2 adds an extra leading digit; check suffix match
+                if (mrzDigits.endsWith(candDigits) || candDigits.endsWith(mrzDigits)) {
+                  console.log(`Strict MRZ Z→2 fix: "${strictDocNum}" → "${cand}"`);
+                  strictDocNum = cand;
+                  break;
+                }
+              }
+            }
+          }
+
           return {
             name: fullName,
-            idNum: f.documentNumber.toUpperCase(),
+            idNum: strictDocNum,
             docType: 'Passport',
             nat: nationality,
             dob: formatDate(f.birthDate),
@@ -1610,6 +1635,34 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
         mrzData.idNum = passMatch1[1].toUpperCase();
       } else if (passMatch2) {
         mrzData.idNum = passMatch2[1].toUpperCase();
+      }
+    }
+
+    // ── Z→2 OCR FIX: Tesseract/PaddleOCR frequently misreads 'Z' as '2' in MRZ monospaced font.
+    // When the MRZ returns a purely-numeric number (e.g. "26015112") but the visual page text
+    // shows an alphanumeric number with a letter prefix (e.g. "Z6015112"), prefer the visual one.
+    if (mrzData.idNum && /^\d+$/.test(mrzData.idNum)) {
+      // Scan the non-MRZ visual page text for passport number patterns that have a letter prefix
+      const visualPageText = filterMrzLinesFromText(ocrText);
+      const visualPassRegex = /\b([A-Z][0-9A-Z]{6,8})\b/g;
+      let vMatch;
+      while ((vMatch = visualPassRegex.exec(visualPageText)) !== null) {
+        const candidate = cleanPassportNumber(vMatch[1]);
+        // Accept if: alphanumeric, and reasonable length (6-9 chars)
+        if (
+          candidate.length >= 6 && candidate.length <= 9 &&
+          isValidPassportNo(candidate) &&
+          /[A-Z]/.test(candidate)
+        ) {
+          const candDigits = candidate.replace(/[^0-9]/g, '');
+          const mrzDigits = mrzData.idNum.replace(/[^0-9]/g, '');
+          // Z misread as 2 adds an extra leading digit; check suffix match
+          if (mrzDigits.endsWith(candDigits) || candDigits.endsWith(mrzDigits)) {
+            console.log(`Z→2 OCR fix: Corrected passport number from "${mrzData.idNum}" to "${candidate}" using visual page text`);
+            mrzData.idNum = candidate;
+            break;
+          }
+        }
       }
     }
 
