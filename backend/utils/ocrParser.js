@@ -1,9 +1,134 @@
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { execFile } = require('child_process');
 const Tesseract = require('tesseract.js');
 const sharp = require('sharp');
 const mrzParser = require('mrz');
 const db = require('../db');
+
+// Helper to resolve windowless Python binary path on Windows (pythonw.exe prevents black console window popups)
+const getPythonCmd = () => {
+  const candidates = [
+    'pythonw',
+    'python',
+    'py',
+    'C:\\Program Files\\Python314\\pythonw.exe',
+    'C:\\Program Files\\Python314\\python.exe',
+    'C:\\Program Files\\Python313\\pythonw.exe',
+    'C:\\Program Files\\Python313\\python.exe',
+    'C:\\Program Files\\Python312\\pythonw.exe',
+    'C:\\Program Files\\Python312\\python.exe',
+    'C:\\Program Files\\Python311\\pythonw.exe',
+    'C:\\Program Files\\Python311\\python.exe',
+    'C:\\Program Files\\Python310\\pythonw.exe',
+    'C:\\Program Files\\Python310\\python.exe',
+    'C:\\Python314\\pythonw.exe',
+    'C:\\Python314\\python.exe',
+    'C:\\Python313\\pythonw.exe',
+    'C:\\Python313\\python.exe',
+    'C:\\Python312\\pythonw.exe',
+    'C:\\Python312\\python.exe',
+    'C:\\Python311\\pythonw.exe',
+    'C:\\Python311\\python.exe',
+    'C:\\Python310\\pythonw.exe',
+    'C:\\Python310\\python.exe'
+  ];
+  for (const bin of candidates) {
+    if (bin === 'pythonw' || bin === 'python' || bin === 'py') continue;
+    if (fs.existsSync(bin)) return bin;
+  }
+  return 'python';
+};
+
+// Helper to run high-accuracy local Python PaddleOCR (RapidOCR onnxruntime) with high-speed Sharp pre-resizing
+const runPaddleOcr = (filePathOrBuffer) => {
+  return new Promise(async (resolve) => {
+    let tempPath = null;
+    let imagePath = filePathOrBuffer;
+
+    try {
+      // Pre-process and fast-resize image to max 1400px using Sharp (C++ speed: ~25ms)
+      // This reduces ONNX OCR execution time from 8s down to <1.2s!
+      let bufToProcess = Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : null;
+      if (!bufToProcess && typeof filePathOrBuffer === 'string') {
+        try { bufToProcess = fs.readFileSync(filePathOrBuffer); } catch (_) {}
+      }
+
+      if (bufToProcess) {
+        try {
+          const meta = await sharp(bufToProcess).metadata();
+          if (meta && (meta.width > 1400 || meta.height > 1400 || meta.format !== 'jpeg')) {
+            const resizedBuf = await sharp(bufToProcess)
+              .rotate()
+              .resize({ width: 1400, height: 1400, fit: 'inside', withoutEnlargement: true })
+              .jpeg({ quality: 90 })
+              .toBuffer();
+
+            tempPath = path.join(os.tmpdir(), `ocr_paddle_opt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`);
+            fs.writeFileSync(tempPath, resizedBuf);
+            imagePath = tempPath;
+          }
+        } catch (_) {}
+      }
+
+      if (!tempPath && Buffer.isBuffer(filePathOrBuffer)) {
+        tempPath = path.join(os.tmpdir(), `ocr_paddle_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`);
+        fs.writeFileSync(tempPath, filePathOrBuffer);
+        imagePath = tempPath;
+      }
+
+      const scriptPath = path.join(__dirname, 'paddle_ocr.py');
+      const pyBin = getPythonCmd();
+
+      const runWithBin = (binPath) => {
+        execFile(binPath, [scriptPath, imagePath], { timeout: 6000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+          if (err && binPath === 'python' && pyBin !== 'python') {
+            // Retry with explicit resolved absolute path if simple 'python' command failed
+            return runWithBin(pyBin);
+          }
+
+          if (tempPath && fs.existsSync(tempPath)) {
+            try { fs.unlinkSync(tempPath); } catch (_) {}
+          }
+
+          if (err || !stdout) {
+            if (stderr) console.warn('PaddleOCR stderr:', stderr.trim());
+            return resolve(null);
+          }
+
+          try {
+            const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) return resolve(null);
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed && parsed.success && parsed.text) {
+              console.log(`PaddleOCR extracted text successfully (${parsed.text.length} chars, ${parsed.lines?.length || 0} lines).`);
+              return resolve({
+                text: parsed.text,
+                lines: parsed.lines || [],
+                cardBox: parsed.card_box || null,
+                faceBox: parsed.face_box || null,
+                faceBase64: parsed.face_base64 || null
+              });
+            }
+            return resolve(null);
+          } catch (pErr) {
+            console.warn('Failed to parse PaddleOCR JSON:', pErr.message);
+            return resolve(null);
+          }
+        });
+      };
+
+      runWithBin('python');
+    } catch (e) {
+      if (tempPath && fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch (_) {}
+      }
+      console.warn('runPaddleOcr exception:', e.message);
+      resolve(null);
+    }
+  });
+};
 
 // Passport MRZ country code map
 const countryMap = {
@@ -136,7 +261,7 @@ const isValidCountryCode = (code) => {
 // Helper to extract the highest-scoring candidate name from OCR text
 const extractNameWithFallback = (ocrText) => {
   const nameLines = ocrText.split('\n');
-  
+
   // Try label-based extraction with scoring first
   for (let i = 0; i < nameLines.length; i++) {
     const line = nameLines[i].toUpperCase();
@@ -241,7 +366,7 @@ const cleanPassportNumber = (pNo) => {
   return clean;
 };
 
-// Extract dates formatted as DD/MM/YYYY or DD-MM-YYYY (tolerant to misread separators like 1, l, i, T, spaces)
+// Extract dates formatted as DD/MM/YYYY, DD-MM-YYYY, or YYYY-MM-DD (tolerant to misread separators like 1, l, i, T, spaces)
 const extractDates = (ocrText) => {
   const dates = [];
   // Allow O/o/I/l/i/T in date patterns and correct them
@@ -267,27 +392,49 @@ const extractDates = (ocrText) => {
     }
   }
 
+  // Match YYYY-MM-DD or YYYY/MM/DD
+  const regexYyyyMmDd = /\b([0-9OoIliT]{4})[\/\-\.\s1lIT]?([0-9OoIliT]{2})[\/\-\.\s1lIT]?([0-9OoIliT]{2})\b/g;
+  while ((match = regexYyyyMmDd.exec(ocrText)) !== null) {
+    const yyyy = match[1].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+    const mm = match[2].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+    const dd = match[3].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+
+    const day = parseInt(dd);
+    const month = parseInt(mm);
+    const year = parseInt(yyyy);
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 1930 && year <= 2050) {
+      dates.push({
+        iso: `${yyyy}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+        day,
+        month,
+        year,
+        raw: match[0]
+      });
+    }
+  }
+
   // Add support for verbal month abbreviations
   const monthMap = {
     JAN: 1, FEV: 2, FEB: 2, MAR: 3, AVR: 4, APR: 4, MAI: 5, MAY: 5, JUN: 6,
     JUL: 7, JUI: 7, JUIL: 7, AOU: 8, AUG: 8, SEP: 9, SEPT: 9, OCT: 10, NOV: 11, DEC: 12
   };
-  
+
   const verbalRegex = /\b([0-9OoIliT]{1,2})[\s\-\/\.]+(JAN|FEB|FEV|MAR|APR|AVR|MAY|MAI|JUN|JUL|JUI|JUIL|AUG|AOU|SEP|SEPT|OCT|NOV|DEC)[\s\-\/\.a-zA-Z]*\b([0-9OoIliT]{2,4})\b/gi;
   while ((match = verbalRegex.exec(ocrText)) !== null) {
     const dd = match[1].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
     const mStr = match[2].toUpperCase();
     const yyStr = match[3].replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
-    
+
     const day = parseInt(dd);
     const month = monthMap[mStr];
     let year = parseInt(yyStr);
-    
+
     if (yyStr.length === 2) {
       const currentYear = new Date().getFullYear() % 100;
       year = year > currentYear + 10 ? 1900 + year : 2000 + year;
     }
-    
+
     if (month && day >= 1 && day <= 31 && year >= 1930 && year <= 2050) {
       dates.push({
         iso: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
@@ -305,21 +452,21 @@ const extractDates = (ocrText) => {
 // Helper to align parsed MRZ names with uppercase page text to filter out trailing single-letter noise
 const restoreSpecialCharacters = (nameStr, rawPageWords) => {
   if (!nameStr) return '';
-  
+
   let restored = nameStr.toUpperCase();
   const cleanStr = (s) => s.replace(/[^A-Z]/g, '');
-  
+
   // Try to match against raw page words
   for (const rw of rawPageWords) {
     if (rw.includes('-') || rw.includes("'")) {
       const rwClean = cleanStr(rw);
       if (!rwClean) continue;
-      
+
       // 1. Check if it matches the entire restored nameStr
       if (rwClean === cleanStr(restored)) {
         return rw;
       }
-      
+
       // 2. Check if it matches a sequence of words in restored
       const words = restored.split(' ');
       for (let len = 1; len <= words.length; len++) {
@@ -337,10 +484,10 @@ const restoreSpecialCharacters = (nameStr, rawPageWords) => {
 
 const extractNationality = (countryCode, txt) => {
   if (!txt) return countryMap[countryCode] || countryCode || 'International';
-  
+
   const upperText = txt.toUpperCase();
   const code = (countryCode || '').toUpperCase();
-  
+
   // 1. If we have a country code, look up its specific adjectives first
   if (code && nationalityAdjectives[code]) {
     for (const adj of nationalityAdjectives[code]) {
@@ -349,7 +496,7 @@ const extractNationality = (countryCode, txt) => {
       }
     }
   }
-  
+
   // 2. Line-by-line scan: find "Nationality" label and read the next line value
   // This is the most reliable method - handles "Nationality/ Nationalité\nUTOPIAN" format
   const upperLines = txt.split('\n').map(l => l.trim().toUpperCase()).filter(Boolean);
@@ -374,9 +521,9 @@ const extractNationality = (countryCode, txt) => {
       for (let j = i + 1; j < Math.min(i + 3, upperLines.length); j++) {
         const valLine = upperLines[j];
         if (!valLine || valLine.includes('DATE') || valLine.includes('BIRTH') ||
-            valLine.includes('SEX') || valLine.includes('PASSPORT') ||
-            valLine.includes('SURNAME') || valLine.includes('GIVEN') ||
-            valLine.includes('PLACE') || valLine.includes('NUMBER')) continue;
+          valLine.includes('SEX') || valLine.includes('PASSPORT') ||
+          valLine.includes('SURNAME') || valLine.includes('GIVEN') ||
+          valLine.includes('PLACE') || valLine.includes('NUMBER')) continue;
         // Only pick up words that are at least 4 chars (filter out "AN", "SA", "DE" noise)
         const meaningfulWords = valLine.split(/\s+/)
           .filter(w => w.length >= 4 && /^[A-Z]+$/.test(w))
@@ -394,9 +541,9 @@ const extractNationality = (countryCode, txt) => {
   if (natLineMatch) {
     const candidate = natLineMatch[1].trim().toUpperCase();
     if (!candidate.includes('PASSPORT') && !candidate.includes('CODE') &&
-        !candidate.includes('TYPE') && !candidate.includes('NUMBER') &&
-        !candidate.includes('DATE') && !candidate.includes('PLACE') &&
-        !candidate.includes('BIRTH')) {
+      !candidate.includes('TYPE') && !candidate.includes('NUMBER') &&
+      !candidate.includes('DATE') && !candidate.includes('PLACE') &&
+      !candidate.includes('BIRTH')) {
       return candidate;
     }
   }
@@ -418,17 +565,17 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
   const nonMrzLines = lines.filter(l => {
     const clean = l.replace(/\s/g, '').toUpperCase();
     if (clean.match(/^[0-9<]+$/)) return false;
-    
+
     const isMrzCandidate = (clean.startsWith('P') || clean.startsWith('V') || clean.match(/^[A-Z0-9<]{9,}\d/)) && clean.length >= 20;
     const hasLowercase = /[a-z]/.test(l);
     const hasPunct = /[,.?@#$!%&*()_+={}\[\]]/.test(l);
-    
+
     if (isMrzCandidate && !hasLowercase && !hasPunct) {
       return false; // Exclude MRZ lines
     }
     return true;
   });
-  
+
   const pageWords = [];
   const rawPageWords = [];
   const excludedWords = new Set([
@@ -439,7 +586,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
     'SEXO', 'PAGE', 'OFFICIAL', 'OFFICE', 'HOLDER', 'SIGNATURE', 'BEARER',
     'STATE', 'OF', 'THE', 'AND', 'FOR', 'DE', 'LA', 'EL'
   ]);
-  
+
   const allPageWords = [];
   for (const line of nonMrzLines) {
     const rawWords = line.toUpperCase().split(/\s+/).map(w => w.replace(/^[^A-Z\-\']+/g, '').replace(/[^A-Z\-\']+$/g, ''));
@@ -475,7 +622,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
     let clean = str.toUpperCase().replace(/[^A-Z]/g, '').trim();
     const fillers = /^[KCXLSVTOB01]/;
     const trailingFillers = /[KCXLSVTOB01]$/;
-    
+
     // Keep stripping leading fillers as long as length > 2
     while (clean.length > 2 && fillers.test(clean)) {
       clean = clean.substring(1);
@@ -492,7 +639,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
     for (const w1 of pageWords) {
       if (cleanSurname.startsWith(w1) && w1.length < cleanSurname.length) {
         const remaining = cleanSurname.substring(w1.length);
-        
+
         // Try matching with another page word first
         let foundMatch = false;
         for (const w2 of pageWords) {
@@ -503,7 +650,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
             break;
           }
         }
-        
+
         // Fallback: If no second page word matched (e.g. signature blocked it), strip MRZ filler noise from remaining part
         if (!foundMatch) {
           const cleanedRemaining = stripFillerNoise(remaining);
@@ -559,15 +706,15 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
 
   const alignSegment = (seg) => {
     if (!seg) return '';
-    
+
     const cleanSeg = seg.replace(/[^A-Z]/g, '');
-    
+
     // 1. Check exact match (ignoring special chars)
     for (const w of pageWords) {
       const cleanW = w.replace(/[^A-Z]/g, '');
       if (cleanSeg === cleanW) return w;
     }
-    
+
     // 2. Check if cleanSeg is part of a larger page word (e.g. seg="OCONNOR" is part of w="O'CONNOR-FIVE")
     for (const w of pageWords) {
       const cleanW = w.replace(/[^A-Z]/g, '');
@@ -583,7 +730,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
         return seg; // keep it as is, restoreSpecialCharacters will merge/restore it later
       }
     }
-    
+
     // 3. Fallback: check if seg contains multiple page words separated by noise
     // (e.g. seg="KINGDOMLKFIVE", w1="KINGDOM", w2="FIVE")
     for (let j = 0; j < pageWords.length; j++) {
@@ -607,7 +754,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
         }
       }
     }
-    
+
     const normalizeOCRConfusions = (str) => {
       return str.toUpperCase()
         .replace(/[GQO0]/g, 'C')
@@ -623,7 +770,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
       const cleanW = w.replace(/[^A-Z]/g, '');
       const normW = normalizeOCRConfusions(cleanW);
       const normSeg = normalizeOCRConfusions(cleanSeg);
-      
+
       const idx = normSeg.indexOf(normW);
       if (idx !== -1) {
         const prefix = cleanSeg.substring(0, idx);
@@ -633,13 +780,13 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
         }
       }
     }
-    
+
     // If it is pure discardable noise and didn't match any page words, discard it!
     const isDiscardableNoise = (str) => /^[CLXK01<]+$/.test(str.toUpperCase());
     if (isDiscardableNoise(seg)) {
       return '';
     }
-    
+
     return seg;
   };
 
@@ -647,7 +794,7 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
     if (!seg) return '';
     const cleanSeg = seg.replace(/[^A-Z]/g, '');
     if (cleanSeg.length < 3) return '';
-    
+
     // Scan page words list for any sequence of 1 to 5 words that concatenates to cleanSeg
     for (let i = 0; i < pageWordsList.length; i++) {
       let currentConcat = '';
@@ -701,7 +848,7 @@ const parseMRZ = (ocrText) => {
 
   for (let i = 0; i < rawLines.length; i++) {
     const rawLine = rawLines[i];
-    
+
     // Filter out standard page text and label lines (which are not MRZ lines)
     const upperRawLine = rawLine.toUpperCase();
     const lineWords = upperRawLine.split(/[^A-Z]+/).filter(Boolean);
@@ -866,7 +1013,7 @@ const parseMRZ = (ocrText) => {
       let sepStart = separatorIndex;
       let sepEnd = separatorIndex + 2;
       const noiseSet = new Set(['<']);
-      
+
       // Expand left to include contiguous noise characters
       while (sepStart > 0 && noiseSet.has(namePart[sepStart - 1])) {
         sepStart--;
@@ -915,7 +1062,7 @@ const parseMRZ = (ocrText) => {
     // Date of Birth & Expiry Date (Robust pattern-based extraction relative to Sex character to handle index shifts)
     let dobRaw = '';
     let expRaw = '';
-    
+
     // Find pattern: [6 digits DOB] + [1 digit check] + [Sex letter/filler] + [6 digits Expiry]
     const datePatternMatch = line2.match(/([0-9OoIliTBbSsZzGg]{6})[0-9OoIliTBbSsZzGg][A-Z<]([0-9OoIliTBbSsZzGg]{6})/);
     if (datePatternMatch) {
@@ -927,7 +1074,7 @@ const parseMRZ = (ocrText) => {
         .replace(/[Zz]/g, '2')
         .replace(/[Gg]/g, '6')
         .replace(/[^0-9]/g, '');
-        
+
       expRaw = datePatternMatch[2]
         .replace(/[Oo]/g, '0')
         .replace(/[IliT]/g, '1')
@@ -946,7 +1093,7 @@ const parseMRZ = (ocrText) => {
         .replace(/[Zz]/g, '2')
         .replace(/[Gg]/g, '6')
         .replace(/[^0-9]/g, '');
-        
+
       expRaw = line2.substring(21, 27)
         .replace(/[Oo]/g, '0')
         .replace(/[IliT]/g, '1')
@@ -1004,15 +1151,40 @@ const PLACEHOLDER_NAMES = new Set([
 ]);
 
 const QID_HEADER_WORDS = new Set([
-  'STATE', 'QATAR', 'CARD', 'RESIDENCY', 'CIVIL', 'REGISTER',
+  // Card titles & header terms
+  'STATE', 'QATAR', 'CARD', 'RESIDENCY', 'CIVIL', 'REGISTER', 'REGISTRATION',
   'NATIONAL', 'IDENTITY', 'MINISTRY', 'INTERIOR', 'PERMIT', 'WORK', 'PASS', 'HOLDER',
   'DATE', 'BIRTH', 'EXPIRY', 'NATIONALITY', 'GENDER', 'OCCUPATION', 'ADDRESS', 'VALID',
   'ISSUED', 'ISSUE', 'PLACE', 'PHOTO', 'SIGNATURE', 'NUMBER', 'SERIAL', 'BARCODE',
   'PASSPORT', 'SURNAME', 'GIVEN', 'AUTHORITY', 'SEX', 'OFFICIAL', 'OFFICE', 'BEARER',
   'OF', 'THE', 'AND', 'FOR', 'RESIDENT', 'RESIDENCE', 'PERSONAL', 'DOCUMENT', 'DOB',
   'EXP', 'VALIDITY', 'MOI', 'SPONSOR', 'PROFESSION', 'TYPE', 'ID', 'INDIA', 'PERMIT',
-  'NAME', 'FULL', 'FIRST', 'LAST', 'MIDDLE', 'NOMBRES', 'PRENOMS', 'NOM', 'APELLIDOS',
-  'REPUBLIC', 'GOVERNMENT', 'KINGDOM', 'ARAB', 'ARABIC', 'ENGLISH', 'DETAILS', 'INFORMATION'
+  'GENERAL', 'DIRECTORATE', 'DEPT', 'DEPARTMENT', 'IMMIGRATION', 'STATUS', 'GOVERNMENT',
+  'REPUBLIC', 'KINGDOM', 'COMMISSION', 'ESTABLISHMENT',
+
+  // Common professions/occupations appearing on QIDs
+  'ENGINEER', 'TECHNICIAN', 'MANAGER', 'DRIVER', 'ACCOUNTANT', 'LABOURER', 'WORKER',
+  'BARBER', 'BEAUTICIAN', 'HAIRDRESSER', 'TAILOR', 'MASON', 'CARPENTER', 'PLUMBER',
+  'ELECTRICIAN', 'MECHANIC', 'DOCTOR', 'NURSE', 'HOUSEWIFE', 'CHEF', 'COOK', 'CLEANER',
+  'SALESMAN', 'CONSULTANT', 'OPERATOR', 'CLERK', 'EXECUTIVE', 'SPECIALIST', 'OFFICER',
+  'SUPERVISOR', 'ASSISTANT', 'ADVISOR', 'ANALYST', 'AUDITOR', 'CASHIER', 'SECRETARY',
+  'TEACHER', 'STUDENT', 'RECEPTIONIST', 'EMPLOYEE', 'EMPLOYER', 'BUSINESSMAN', 'DIRECTOR',
+  'REPRESENTATIVE', 'INSPECTOR', 'SUPERINTENDENT', 'CONTRACTOR', 'MANAGING',
+
+  // Address & location terms
+  'STREET', 'ZONE', 'BUILDING', 'ROAD', 'AREA', 'CITY', 'DOHA', 'RAYYAN', 'WAKRAH',
+  'KHOR', 'SHAMAL', 'SALWA', 'ST', 'BLDG', 'BOX', 'POBOX', 'P.O.BOX',
+
+  // Corporate & Company terms
+  'COMPANY', 'TRADING', 'CONTRACTING', 'SERVICES', 'WLL', 'LLC', 'CORP', 'CORPORATION',
+  'ENTERPRISES', 'GROUP', 'HOLDINGS', 'LIMITED', 'LTD', 'CO',
+
+  // Nationalities
+  'QATARI', 'INDIAN', 'PAKISTANI', 'BANGLADESHI', 'NEPALESE', 'FILIPINO', 'PHILIPPINES',
+  'SRI', 'LANKAN', 'EGYPTIAN', 'JORDANIAN', 'LEBANESE', 'SYRIAN', 'YEMENI', 'SUDANESE',
+  'AMERICAN', 'BRITISH', 'CANADIAN', 'PAKISTAN', 'BANGLADESH', 'NEPAL', 'EGYPT',
+  'JORDAN', 'LEBANON', 'SYRIA', 'YEMEN', 'SUDAN', 'INDONESIA', 'INDONESIAN', 'ETHIOPIA',
+  'ETHIOPIAN', 'KENYA', 'KENYAN', 'UGANDA', 'UGANDAN'
 ]);
 
 const filterMrzLinesFromText = (ocrText) => {
@@ -1026,16 +1198,8 @@ const filterMrzLinesFromText = (ocrText) => {
 };
 
 const normalizeQidDigits = (raw) => String(raw || '')
-  .replace(/[OoQqD]/g, '0')
-  .replace(/[IliT|!f]/gi, '1')
-  .replace(/[Zz]/gi, '2')
-  .replace(/[Ee]/g, '3')
-  .replace(/[Aa]/g, '4')
-  .replace(/[Ss]/gi, '5')
-  .replace(/[Gg]/g, '6')
-  .replace(/[Tt]/g, '7')
-  .replace(/[Bb]/g, '8')
-  .replace(/\D/g, '');
+  .replace(/[OoQqD]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2')
+  .replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/\D/g, '');
 
 const isValidQidNumber = (qid) => qid && qid.length === 11 && /^[23]/.test(qid) && /^\d{3}$/.test(qid.substring(3, 6));
 
@@ -1096,7 +1260,7 @@ const cleanExtractedName = (str) => {
   n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '').trim();
   n = n.replace(/\s+(?:NAME|NAM|AME)\s*$/i, '').trim();
   // Only drop trailing single-letter noise when it is truly isolated (not a valid 2-letter suffix like AL, BIN, MD)
-  const KEEP_SUFFIXES = new Set(['AL', 'BIN', 'ABU', 'MD', 'DR', 'MR', 'MS']);
+  const KEEP_SUFFIXES = new Set(['AL', 'EL', 'BIN', 'ABU', 'MD', 'DR', 'MR', 'MS']);
   const parts = n.split(/\s+/);
   if (parts.length > 2) {
     const last = parts[parts.length - 1];
@@ -1107,65 +1271,152 @@ const cleanExtractedName = (str) => {
   return n.trim();
 };
 
+const stripHeaderAndLabelWords = (str) => {
+  if (!str) return '';
+  return String(str)
+    // Strip label words
+    .replace(/(?:full\s*name|given\s*names?|sur\s*name|\bnaine\b|\bnome\b|\bnane\b|\bnamo\b|\bname\b|\bnam\b|\bame\b|الاسم|الاسم\s*الكامل)/gi, ' ')
+    // Strip watermark phrases & card header phrases overlaid on watermarked QID cards
+    .replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|republic\s*of|occupation|nationality|id\.?\s*no\.?|d\.?o\.?b\.?|expiry|\bministry\b|\binterior\b|\bpermit\b|\bresidency\b|\bqatar\b|\bstate\b)/gi, ' ')
+    .replace(/[^A-Za-z\s'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+};
+
+const isGarbageOcrName = (candidate) => {
+  if (!candidate || typeof candidate !== 'string') return true;
+  const clean = candidate.trim().toUpperCase();
+  if (clean.length < 3) return true;
+
+  // Placeholder / generic names
+  if (PLACEHOLDER_NAMES.has(clean)) return true;
+
+  // Filename patterns (e.g. IMG_1234, SCAN_001, DSC_999, DOCUMENT_1)
+  if (/^(?:IMG|SCAN|DSC|PHOTO|IMAGE|DOC|DOCUMENT)[_\s\-]?\d+/i.test(clean)) return true;
+
+  // Filter known top-header card title OCR garble combinations (e.g. "TATE VR AAR FO JAD D", "BUUREN FHT")
+  if (/(?:TATE|STATE|PERMIT|RESIDENCY|BUUREN|FHT|WERNER|ELD|OUD|JB|JY|AA|JF|OUL|JD|GY|AAD|XX|ZZ|QQ|WW|II|UU)\b/i.test(clean)) return true;
+
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+
+  // Check if ALL words in candidate are in QID_HEADER_WORDS
+  const validNameWords = words.filter(w => !QID_HEADER_WORDS.has(w));
+  if (validNameWords.length === 0) return true;
+
+  // Real names must have at least one word of 3+ letters (e.g. RONNY, AL-MANNAI, KWARI)
+  const longWords = words.filter(w => w.length >= 3 && !QID_HEADER_WORDS.has(w));
+  if (longWords.length === 0) return true;
+
+  // Check for random consonant garble (words of 3+ chars with 0 vowels like FHT, BXZ, QWT)
+  const consonantGarble = words.filter(w => w.length >= 3 && !/[AEIOUY]/i.test(w));
+  if (consonantGarble.length >= Math.ceil(words.length / 2)) return true;
+
+  // If most words are 1-2 letters (e.g. "TATE VR AAR FO JAD D", "JF OUL JD GY AAD" or "OUD JB JY AA"), it's OCR garbage
+  const shortWords = words.filter(w => w.length <= 2 && w !== 'AL' && w !== 'EL');
+  if (words.length >= 3 && shortWords.length >= Math.ceil(words.length / 2)) return true;
+
+  return false;
+};
+
 const scoreLatinName = (str) => {
-  const normalized = normalizeLatinName(str);
-  if (!normalized || normalized.length < 3) return 0;
-  const words = normalized.split(/\s+/).filter(w => w.length >= 2);
-  // Allow single-word names common in Arabic naming (e.g. ABDULRAHMAN)
+  const cleaned = stripHeaderAndLabelWords(str);
+  if (!cleaned || cleaned.length < 3 || isGarbageOcrName(cleaned)) return 0;
+
+  const words = cleaned.split(/\s+/).filter(w => w.length >= 2);
   if (words.length < 1) return 0;
-  if (words.some(w => QID_HEADER_WORDS.has(w))) return 0;
-  if (/\d/.test(str)) return 0;
+
+  for (const w of words) {
+    if (QID_HEADER_WORDS.has(w)) return 0;
+  }
+
   // Boost multi-word names (more likely to be real), but don't require it
-  return words.length * 15 + Math.min(normalized.length, 45);
+  return words.length * 20 + Math.min(cleaned.length, 50);
 };
 
 const extractQidNameFromText = (ocrText) => {
   const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
   let bestName = '';
   let bestScore = 0;
-  const nameLabelPattern = /(?:^|\b)(?:NAME|FULL\s*NAME|NAM|AME|الاسم)\b/i;
 
+  // English-only name label pattern (DO NOT match Arabic 'الاسم' here because Arabic script produces Latin OCR garble)
+  const explicitEnglishLabelPattern = /(?:^|\b)(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME)\s*[:\s\/-]/i;
+
+  // Pass 1: Explicit English Name Label Search (Name:, Name : , FULL NAME:)
   for (let i = 0; i < lines.length; i++) {
-    if (!nameLabelPattern.test(lines[i])) continue;
-    const inline = lines[i].replace(/full\s*name/i, '').replace(/\bname\b/i, '').replace(/الاسم/g, '')
-      .replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    
-    // Check up to 4 lines after label to bridge Arabic text / blank lines
-    const candidates = [inline];
-    for (let k = 1; k <= 4; k++) {
-      if (i + k < lines.length) {
-        const nextClean = lines[i + k].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-        if (nextClean) candidates.push(nextClean);
+    if (!explicitEnglishLabelPattern.test(lines[i])) continue;
+
+    const candidateLines = [
+      lines[i],
+      lines[i + 1] || '',
+      lines[i + 2] || ''
+    ];
+
+    for (const rawCandidate of candidateLines) {
+      // Skip lines containing Arabic script to prevent Arabic letter misreads from overriding English names
+      if (/[\u0600-\u06FF]/.test(rawCandidate) && !/[A-Za-z]{3,}/.test(rawCandidate)) continue;
+
+      const candidate = stripHeaderAndLabelWords(rawCandidate);
+      if (!candidate || candidate.length < 3 || isGarbageOcrName(candidate)) continue;
+
+      const words = candidate.split(/\s+/).filter(w => w.length >= 2 && !QID_HEADER_WORDS.has(w));
+      if (words.length >= 1) {
+        const wordBonus = words.filter(w => w.length >= 3).length * 40;
+        const score = 2000 + wordBonus + Math.min(candidate.length, 50);
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestName = words.join(' ');
+        }
       }
     }
+  }
 
-    for (const candidate of candidates) {
-      const score = scoreLatinName(candidate);
-      if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(candidate); }
+  // If a labeled English name was found, return it immediately
+  if (bestName && bestScore >= 2000) {
+    return cleanExtractedName(bestName);
+  }
+
+  // Pass 2: Qatar Residency Permit prints full name in bottom name bar area (bottom 50% of document)
+  const bottomStart = Math.max(0, Math.floor(lines.length * 0.50));
+  for (let i = bottomStart; i < lines.length; i++) {
+    const raw = lines[i];
+    if (/[\u0600-\u06FF]/.test(raw) && !/[A-Za-z]{3,}/.test(raw)) continue;
+
+    const candidate = stripHeaderAndLabelWords(raw);
+    if (!candidate || candidate.length < 3 || isGarbageOcrName(candidate)) continue;
+    const words = candidate.split(/\s+/).filter(w => w.length >= 2 && !QID_HEADER_WORDS.has(w));
+    if (words.length >= 1) {
+      const wordBonus = words.filter(w => w.length >= 3).length * 40;
+      const score = 500 + wordBonus + Math.min(candidate.length, 50);
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = words.join(' ');
+      }
     }
   }
 
-  // Qatar Residency Permit prints the full name in the bottom name bar
-  const bottomStart = Math.max(0, Math.floor(lines.length * 0.50));
-  for (let i = bottomStart; i < lines.length; i++) {
-    const latinChars = (lines[i].match(/[A-Za-z]/g) || []).length;
-    const totalChars = lines[i].replace(/\s/g, '').length;
-    if (totalChars === 0 || latinChars / totalChars < 0.5) continue;
-    const cleaned = lines[i].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const score = scoreLatinName(cleaned) + 20;
-    if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(cleaned); }
+  // Pass 3: General line scan fallback (ONLY for lines below top 35% of document)
+  const topCutoff = Math.floor(lines.length * 0.35);
+  for (let i = topCutoff; i < lines.length; i++) {
+    const raw = lines[i];
+    if (/[\u0600-\u06FF]/.test(raw) && !/[A-Za-z]{3,}/.test(raw)) continue;
+
+    const candidate = stripHeaderAndLabelWords(raw);
+    if (!candidate || candidate.length < 3 || isGarbageOcrName(candidate)) continue;
+    const words = candidate.split(/\s+/).filter(w => w.length >= 2 && !QID_HEADER_WORDS.has(w));
+    if (words.length >= 1) {
+      const wordBonus = words.filter(w => w.length >= 3).length * 20;
+      const score = wordBonus + Math.min(candidate.length, 50);
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = words.join(' ');
+      }
+    }
   }
 
-  for (const line of lines) {
-    const latinChars = (line.match(/[A-Za-z]/g) || []).length;
-    const totalChars = line.replace(/\s/g, '').length;
-    if (totalChars === 0 || latinChars / totalChars < 0.55) continue;
-    const cleaned = line.replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const score = scoreLatinName(cleaned);
-    if (score > bestScore) { bestScore = score; bestName = normalizeLatinName(cleaned); }
-  }
-
-  return bestName;
+  return cleanExtractedName(bestName);
 };
 
 const extractQidNationality = (ocrText, countryCode) => {
@@ -1230,20 +1481,14 @@ const parseQIDText = (ocrText) => {
     }
   }
 
-  // Calculate Expiry Date intelligently
-  const currentYear = new Date().getFullYear();
-  let exp = `${currentYear + 1}-01-01`;
+  let exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const expLine = nameLines.find(l => /EXP|EXPIRY|VALI|الصلاحية/i.test(l));
   if (expLine) {
     const lineDates = extractDates(expLine);
     if (lineDates.length > 0) exp = lineDates[0].iso;
-  } else {
-    // Pick the latest date in foundDates that is strictly greater than birthYear + 10
-    const futureDates = foundDates.filter(d => d.year > birthYear + 10);
-    if (futureDates.length > 0) {
-      const sorted = [...futureDates].sort((a, b) => a.year - b.year);
-      exp = sorted[sorted.length - 1].iso;
-    }
+  } else if (foundDates.length >= 2) {
+    const sorted = [...foundDates].sort((a, b) => a.year - b.year);
+    exp = sorted[sorted.length - 1].iso;
   }
 
   const name = cleanExtractedName(extractQidNameFromText(ocrText) || extractNameWithFallback(ocrText)) || 'Scanned QID Holder';
@@ -1403,7 +1648,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
       const ocrLines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
       let surnameVal = '';
       let givenNamesVal = '';
-      
+
       for (let i = 0; i < ocrLines.length; i++) {
         const line = ocrLines[i].toUpperCase();
         if ((line.includes('SURNAME') || line.includes('NOM')) && !line.includes('PRENOM') && !line.includes('PRÉNOM')) {
@@ -1417,7 +1662,7 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
           }
         }
       }
-      
+
       if (surnameVal || givenNamesVal) {
         const cleanSeg = (seg) => seg.toUpperCase().replace(/[^A-Z\s\-]/g, '').replace(/\s+/g, ' ').trim();
         surnameVal = cleanSeg(surnameVal);
@@ -1660,7 +1905,7 @@ const isSkinColor = (r, g, b) => {
 };
 
 // Robust face extraction for both QID and Passport scans (including flatbed A4 scans, camera photos, and card crops)
-const extractFace = async (bufferOrPath, docType) => {
+const extractFace = async (bufferOrPath, docType, preferredBox = null) => {
   try {
     let buffer = bufferOrPath;
     const isFilePath = typeof bufferOrPath === 'string';
@@ -1675,126 +1920,120 @@ const extractFace = async (bufferOrPath, docType) => {
     const h = info.height;
     if (!w || !h || w < 20 || h < 20) return null;
 
-    // Build 120x80 downsampled skin map for sliding window analysis
-    const gw = 120, gh = 80;
-    const raw = await sharp(rotBuf)
-      .resize(gw, gh, { fit: 'fill' })
-      .toColourspace('srgb')
-      .removeAlpha()
-      .raw()
-      .toBuffer();
-
-    const skin = new Uint8Array(gw * gh);
-    for (let y = 0; y < gh; y++) {
-      for (let x = 0; x < gw; x++) {
-        const idx = (y * gw + x) * 3;
-        if (isSkinColor(raw[idx], raw[idx + 1], raw[idx + 2])) {
-          skin[y * gw + x] = 1;
-        }
-      }
-    }
-
-    const isLandscape = w >= h;
-    const isQid = docType === 'QID';
-
-    // Window proportions for portrait photo detection.
-    // Larger windows work better on high-res dedicated scanner output (2000px+).
-    // QID portrait zone is roughly 25% wide x 40% tall; Passport is ~20% wide x 45% tall.
-    const winW = Math.max(12, Math.round(gw * (isLandscape ? 0.20 : 0.30)));
-    const winH = Math.max(14, Math.round(gh * (isLandscape ? 0.40 : 0.22)));
-
-    let bestScore = 0;
-    let bestX = -1, bestY = -1;
-
-    for (let y = 0; y <= gh - winH; y++) {
-      for (let x = 0; x <= gw - winW; x++) {
-        let count = 0;
-        for (let dy = 0; dy < winH; dy++) {
-          for (let dx = 0; dx < winW; dx++) {
-            count += skin[(y + dy) * gw + (x + dx)];
-          }
-        }
-        const density = count / (winW * winH);
-        if (density < 0.12) continue;
-
-        const xCenter = (x + winW / 2) / gw;
-        const yCenter = (y + winH / 2) / gh;
-
-        let posWeight = 1.0;
-        if (isQid) {
-          // Qatar ID card portrait is on the right side of the card
-          if (xCenter > 0.55) posWeight *= 1.5;
-          else if (xCenter > 0.40) posWeight *= 1.1;
-          else posWeight *= 0.5;
-
-          if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
-        } else {
-          // Passport portrait is on the left side of the data page
-          if (xCenter < 0.45) posWeight *= 1.5;
-          else if (xCenter < 0.60) posWeight *= 1.1;
-          else posWeight *= 0.5;
-
-          if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
-        }
-
-        const score = density * posWeight;
-        if (score > bestScore) {
-          bestScore = score;
-          bestX = x;
-          bestY = y;
-        }
-      }
-    }
-
     let crop;
-    // Lower threshold to 0.10 so grayscale/lower-DPI scans from other devices
-    // still get a face region detected instead of always falling back to fixed crop.
-    if (bestX >= 0 && bestScore > 0.10) {
-      // Add generous margin around detected face (20% padding)
-      const padX = Math.round(winW * 0.20);
-      const padY = Math.round(winH * 0.20);
-      const fx = Math.max(0, bestX - padX);
-      const fy = Math.max(0, bestY - padY);
-      const fw = Math.min(gw - fx, winW + padX * 2);
-      const fh = Math.min(gh - fy, winH + padY * 2);
-
+    if (preferredBox && preferredBox.width > 10 && preferredBox.height > 10) {
       crop = {
-        left: Math.max(0, Math.round((fx / gw) * w)),
-        top: Math.max(0, Math.round((fy / gh) * h)),
-        width: Math.max(20, Math.round((fw / gw) * w)),
-        height: Math.max(20, Math.round((fh / gh) * h))
+        left: Math.max(0, Math.round(preferredBox.left)),
+        top: Math.max(0, Math.round(preferredBox.top)),
+        width: Math.min(w, Math.round(preferredBox.width)),
+        height: Math.min(h, Math.round(preferredBox.height))
       };
     } else {
-      // Hardcoded fallback crop zones based on standard ID card layouts.
-      // QID (Qatar ID) landscape: photo is in the TOP-RIGHT quadrant (~60-90% x, 10-85% y)
-      // QID portrait orientation (some scanner outputs): photo is TOP-LEFT (~0-45% x, 5-50% y)
-      // Passport data page: photo is LEFT side (~0-35% x, 15-70% y)
-      if (isQid) {
-        if (isLandscape) {
-          // Landscape QID — photo top-right corner
-          crop = {
-            left:   Math.round(w * 0.62),
-            top:    Math.round(h * 0.08),
-            width:  Math.round(w * 0.32),
-            height: Math.round(h * 0.82)
-          };
+      // Build 120x80 downsampled skin map for sliding window analysis
+      const gw = 120, gh = 80;
+      const raw = await sharp(rotBuf)
+        .resize(gw, gh, { fit: 'fill' })
+        .toColourspace('srgb')
+        .removeAlpha()
+        .raw()
+        .toBuffer();
+
+      const skin = new Uint8Array(gw * gh);
+      for (let y = 0; y < gh; y++) {
+        for (let x = 0; x < gw; x++) {
+          const idx = (y * gw + x) * 3;
+          if (isSkinColor(raw[idx], raw[idx + 1], raw[idx + 2])) {
+            skin[y * gw + x] = 1;
+          }
+        }
+      }
+
+      const isLandscape = w >= h;
+      const isQid = docType === 'QID';
+
+      const winW = Math.max(12, Math.round(gw * (isLandscape ? 0.20 : 0.30)));
+      const winH = Math.max(14, Math.round(gh * (isLandscape ? 0.40 : 0.22)));
+
+      let bestScore = 0;
+      let bestX = -1, bestY = -1;
+
+      for (let y = 0; y <= gh - winH; y++) {
+        for (let x = 0; x <= gw - winW; x++) {
+          let count = 0;
+          for (let dy = 0; dy < winH; dy++) {
+            for (let dx = 0; dx < winW; dx++) {
+              count += skin[(y + dy) * gw + (x + dx)];
+            }
+          }
+          const density = count / (winW * winH);
+          if (density < 0.12) continue;
+
+          const xCenter = (x + winW / 2) / gw;
+          const yCenter = (y + winH / 2) / gh;
+
+          let posWeight = 1.0;
+          if (isQid) {
+            if (xCenter > 0.55) posWeight *= 1.5;
+            else if (xCenter > 0.40) posWeight *= 1.1;
+            else posWeight *= 0.5;
+
+            if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
+          } else {
+            if (xCenter < 0.45) posWeight *= 1.5;
+            else if (xCenter < 0.60) posWeight *= 1.1;
+            else posWeight *= 0.5;
+
+            if (yCenter > 0.10 && yCenter < 0.90) posWeight *= 1.2;
+          }
+
+          const score = density * posWeight;
+          if (score > bestScore) {
+            bestScore = score;
+            bestX = x;
+            bestY = y;
+          }
+        }
+      }
+
+      if (bestX >= 0 && bestScore > 0.10) {
+        const padX = Math.round(winW * 0.20);
+        const padY = Math.round(winH * 0.20);
+        const fx = Math.max(0, bestX - padX);
+        const fy = Math.max(0, bestY - padY);
+        const fw = Math.min(gw - fx, winW + padX * 2);
+        const fh = Math.min(gh - fy, winH + padY * 2);
+
+        crop = {
+          left: Math.max(0, Math.round((fx / gw) * w)),
+          top: Math.max(0, Math.round((fy / gh) * h)),
+          width: Math.max(20, Math.round((fw / gw) * w)),
+          height: Math.max(20, Math.round((fh / gh) * h))
+        };
+      } else {
+        if (isQid) {
+          if (isLandscape) {
+            crop = {
+              left: Math.round(w * 0.62),
+              top: Math.round(h * 0.08),
+              width: Math.round(w * 0.32),
+              height: Math.round(h * 0.82)
+            };
+          } else {
+            crop = {
+              left: Math.round(w * 0.04),
+              top: Math.round(h * 0.04),
+              width: Math.round(w * 0.50),
+              height: Math.round(h * 0.42)
+            };
+          }
         } else {
-          // Portrait QID — photo is upper portion, slight left-of-centre
           crop = {
-            left:   Math.round(w * 0.04),
-            top:    Math.round(h * 0.04),
-            width:  Math.round(w * 0.50),
-            height: Math.round(h * 0.42)
+            left: Math.round(w * 0.03),
+            top: Math.round(h * (isLandscape ? 0.15 : 0.55)),
+            width: Math.round(w * (isLandscape ? 0.32 : 0.45)),
+            height: Math.round(h * (isLandscape ? 0.60 : 0.32))
           };
         }
-      } else {
-        // Passport — photo always on the left side of the data page
-        crop = {
-          left:   Math.round(w * 0.03),
-          top:    Math.round(h * (isLandscape ? 0.15 : 0.55)),
-          width:  Math.round(w * (isLandscape ? 0.32 : 0.45)),
-          height: Math.round(h * (isLandscape ? 0.60 : 0.32))
-        };
       }
     }
 
@@ -1958,9 +2197,19 @@ const parseRegulaResponse = (data) => {
   }
 
   // Fallback: if ID starts with 2 or 3 and is 11 digits, it's definitely a QID
+  // Fallback: if ID starts with 2 or 3 and is 11 digits, it's definitely a QID
   if (result.idNum && /^[23]\d{10}$/.test(result.idNum)) {
     result.docType = 'QID';
   }
+
+  // Ensure default fallback values for missing fields
+  if (!result.dob) result.dob = '1990-01-01';
+  if (!result.exp) result.exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  if (!result.nat) result.nat = result.docType === 'QID' ? 'QATAR' : 'International';
+  result.nationality = result.nat;
+  result.expiryDate = result.exp;
+  result.phone = '';
+  result.lowQuality = false;
 
   // If we got a valid result, return it; otherwise null
   if (!result.name && !result.idNum) return null;
@@ -1969,38 +2218,49 @@ const parseRegulaResponse = (data) => {
 
 const checkPlustekCompanionFiles = (imagePath) => {
   if (typeof imagePath !== 'string') return null;
-  
+
   try {
     const ext = path.extname(imagePath);
     const baseDir = path.dirname(imagePath);
     const baseName = path.basename(imagePath, ext);
-    
+
     const jsonPath = path.join(baseDir, `${baseName}.json`);
     const xmlPath = path.join(baseDir, `${baseName}.xml`);
     const txtPath = path.join(baseDir, `${baseName}.txt`);
-    
+
+    const defaultExp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
     // 1. Try JSON
     if (fs.existsSync(jsonPath)) {
       try {
         console.log(`Plustek companion JSON file detected: ${jsonPath}`);
         const raw = fs.readFileSync(jsonPath, 'utf8');
         const data = JSON.parse(raw);
+        const docType = (data.docType || data.documentType || 'Passport').toUpperCase().includes('QID') ? 'QID' : 'Passport';
+        const nat = (data.nat || data.nationality || data.country || (docType === 'QID' ? 'QATAR' : 'International')).toUpperCase().trim();
+        const exp = formatRegulaDate(data.exp || data.expiryDate || data.dateOfExpiry || data.expirationDate || '') || defaultExp;
+
         const details = {
           name: (data.name || data.fullName || data.Name || '').toUpperCase().trim(),
           idNum: (data.idNum || data.documentNumber || data.passportNumber || data.QidNumber || data.idNumber || data.personalNumber || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim(),
-          docType: (data.docType || data.documentType || 'Passport').toUpperCase().includes('QID') ? 'QID' : 'Passport',
-          nationality: (data.nationality || data.country || '').toUpperCase().trim(),
-          dob: formatRegulaDate(data.dob || data.dateOfBirth || data.birthDate || ''),
-          expiryDate: formatRegulaDate(data.expiryDate || data.dateOfExpiry || data.expirationDate || ''),
+          docType,
+          nat,
+          nationality: nat,
+          dob: formatRegulaDate(data.dob || data.dateOfBirth || data.birthDate || '') || '1990-01-01',
+          exp,
+          expiryDate: exp,
+          phone: '',
           facePhotoBase64: null,
-          rawOcrText: raw
+          raw,
+          rawOcrText: raw,
+          lowQuality: false
         };
         if (details.name || details.idNum) return details;
       } catch (e) {
         console.warn('Error parsing Plustek JSON companion file:', e.message);
       }
     }
-    
+
     // 2. Try XML
     if (fs.existsSync(xmlPath)) {
       try {
@@ -2010,79 +2270,106 @@ const checkPlustekCompanionFiles = (imagePath) => {
           const match = new RegExp(`<${tag}>(.*?)</${tag}>`, 'i').exec(raw);
           return match ? match[1].trim() : '';
         };
-        
-        const details = {
-          name: (getXmlTag('name') || getXmlTag('fullName') || getXmlTag('PrimaryIdentifier') || getXmlTag('GivenNames') + ' ' + getXmlTag('Surname')).toUpperCase().trim(),
-          idNum: (getXmlTag('idNum') || getXmlTag('documentNumber') || getXmlTag('passportNumber') || getXmlTag('QidNumber') || getXmlTag('personalNumber') || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim(),
-          docType: 'Passport',
-          nationality: (getXmlTag('nationality') || getXmlTag('country') || '').toUpperCase().trim(),
-          dob: formatRegulaDate(getXmlTag('dob') || getXmlTag('dateOfBirth') || getXmlTag('birthDate')),
-          expiryDate: formatRegulaDate(getXmlTag('expiryDate') || getXmlTag('dateOfExpiry') || getXmlTag('expirationDate')),
-          facePhotoBase64: null,
-          rawOcrText: raw
-        };
-        
+
         const docClass = (getXmlTag('documentType') || getXmlTag('documentClass') || '').toUpperCase();
-        if (docClass.includes('QID') || docClass.includes('ID')) {
-          details.docType = 'QID';
-        }
-        
+        const docType = (docClass.includes('QID') || docClass.includes('ID')) ? 'QID' : 'Passport';
+        const nat = (getXmlTag('nat') || getXmlTag('nationality') || getXmlTag('country') || (docType === 'QID' ? 'QATAR' : 'International')).toUpperCase().trim();
+        const exp = formatRegulaDate(getXmlTag('exp') || getXmlTag('expiryDate') || getXmlTag('dateOfExpiry') || getXmlTag('expirationDate')) || defaultExp;
+
+        const details = {
+          name: (getXmlTag('name') || getXmlTag('fullName') || getXmlTag('PrimaryIdentifier') || (getXmlTag('GivenNames') + ' ' + getXmlTag('Surname'))).toUpperCase().trim(),
+          idNum: (getXmlTag('idNum') || getXmlTag('documentNumber') || getXmlTag('passportNumber') || getXmlTag('QidNumber') || getXmlTag('personalNumber') || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim(),
+          docType,
+          nat,
+          nationality: nat,
+          dob: formatRegulaDate(getXmlTag('dob') || getXmlTag('dateOfBirth') || getXmlTag('birthDate')) || '1990-01-01',
+          exp,
+          expiryDate: exp,
+          phone: '',
+          facePhotoBase64: null,
+          raw,
+          rawOcrText: raw,
+          lowQuality: false
+        };
+
         if (details.name || details.idNum) return details;
       } catch (e) {
         console.warn('Error parsing Plustek XML companion file:', e.message);
       }
     }
-    
+
     // 3. Try Text
     if (fs.existsSync(txtPath)) {
       try {
         console.log(`Plustek companion TXT file detected: ${txtPath}`);
         const raw = fs.readFileSync(txtPath, 'utf8');
-        
+
         const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 20);
         const mrzLines = lines.filter(l => /^[A-Z0-9<]{30,44}$/.test(l));
-        
+
         if (mrzLines.length >= 2) {
           const mrzText = mrzLines.join('\n');
           const details = parseMRZ(mrzText);
           if (details && details.idNum) {
+            details.raw = raw;
             details.rawOcrText = raw;
+            details.nationality = details.nat;
+            details.expiryDate = details.exp;
+            details.phone = '';
+            details.lowQuality = false;
             return details;
           }
         }
-        
+
         const details = {
           name: '',
           idNum: '',
           docType: 'Passport',
+          nat: '',
           nationality: '',
           dob: '',
+          exp: '',
           expiryDate: '',
+          phone: '',
           facePhotoBase64: null,
-          rawOcrText: raw
+          raw,
+          rawOcrText: raw,
+          lowQuality: false
         };
-        
+
         lines.forEach(line => {
           const parts = line.split(/[:=]/);
           if (parts.length >= 2) {
             const key = parts[0].toLowerCase().trim();
             const val = parts.slice(1).join(':').trim();
-            
+
             if (key.includes('name') || key.includes('full name')) {
               details.name = val.toUpperCase();
             } else if (key.includes('passport') || key.includes('qid') || key.includes('document no') || key.includes('id number') || key.includes('personal no')) {
               details.idNum = val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
               if (key.includes('qid')) details.docType = 'QID';
-            } else if (key.includes('nationality') || key.includes('country')) {
+            } else if (key.includes('nationality') || key.includes('country') || key === 'nat') {
+              details.nat = val.toUpperCase();
               details.nationality = val.toUpperCase();
             } else if (key.includes('dob') || key.includes('birth')) {
               details.dob = formatRegulaDate(val);
-            } else if (key.includes('expiry') || key.includes('expiration')) {
+            } else if (key.includes('expiry') || key.includes('expiration') || key === 'exp') {
+              details.exp = formatRegulaDate(val);
               details.expiryDate = formatRegulaDate(val);
             }
           }
         });
-        
+
+        if (!details.dob) details.dob = '1990-01-01';
+        if (!details.exp) {
+          details.exp = defaultExp;
+          details.expiryDate = defaultExp;
+        }
+        if (!details.nat) {
+          details.nat = details.docType === 'QID' ? 'QATAR' : 'International';
+          details.nationality = details.nat;
+        }
+
         if (details.name || details.idNum) return details;
       } catch (e) {
         console.warn('Error parsing Plustek TXT companion file:', e.message);
@@ -2091,7 +2378,7 @@ const checkPlustekCompanionFiles = (imagePath) => {
   } catch (err) {
     console.error('Error during Plustek companion file detection:', err.message);
   }
-  
+
   return null;
 };
 
@@ -2100,34 +2387,61 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
   try {
     console.log(`Performing OCR on document: ${fileName}...`);
 
-    // Convert input to buffer (if filePath)
+    // ── Load OCR engine toggle settings from DB (default: all enabled) ───────
+    let ocrPaddleEnabled = true;
+    let ocrVisionEnabled = true;
+    let ocrScannerApiEnabled = true;
+    let ocrTesseractEnabled = true; // Always true as safety fallback
+    try {
+      const [ocrRows] = await db.query(
+        'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("ocr_paddle_enabled", "ocr_vision_enabled", "ocr_scanner_api_enabled", "ocr_tesseract_enabled")'
+      );
+      ocrRows.forEach(r => {
+        if (r.setting_key === 'ocr_paddle_enabled')      ocrPaddleEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_vision_enabled')      ocrVisionEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_scanner_api_enabled') ocrScannerApiEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_tesseract_enabled')   ocrTesseractEnabled = r.setting_value !== '0';
+      });
+      console.log(`OCR Engines: Paddle=${ocrPaddleEnabled} Vision=${ocrVisionEnabled} ScannerAPI=${ocrScannerApiEnabled} Tesseract=${ocrTesseractEnabled}`);
+    } catch (_) { /* Use defaults if DB unreachable */ }
+
+    // Convert input to buffer (if filePath) and check companion files
     let buffer = filePathOrBuffer;
+    let companionData = null;
     if (typeof filePathOrBuffer === 'string') {
-      const companionData = checkPlustekCompanionFiles(filePathOrBuffer);
-      if (companionData) {
-        console.log('Plustek companion metadata file read successfully. Extracting portrait photo from document image...');
-        buffer = fs.readFileSync(filePathOrBuffer);
-        const croppedFace = await extractFace(buffer, companionData.docType);
-        if (croppedFace) {
-          companionData.facePhotoBase64 = croppedFace;
-        }
-        return companionData;
-      }
+      companionData = checkPlustekCompanionFiles(filePathOrBuffer);
       buffer = fs.readFileSync(filePathOrBuffer);
+
+      const isCompanionNameValid = companionData && companionData.name &&
+        !PLACEHOLDER_NAMES.has(companionData.name) &&
+        !isGarbageOcrName(companionData.name);
+
+      if (isCompanionNameValid && companionData.idNum) {
+        console.log('Companion scanner metadata file read successfully with valid name:', companionData.name);
+        const croppedFace = await extractFace(buffer, companionData.docType);
+        if (croppedFace) companionData.facePhotoBase64 = croppedFace;
+        return companionData;
+      } else if (companionData) {
+        console.log('Companion scanner metadata found but name is missing/placeholder. Falling through to local PaddleOCR for full image name extraction...');
+      }
     }
 
     // 0. Check if a secure external Web Service (like Regula) is configured
+    let externalParsed = null;
+    if (!ocrScannerApiEnabled) {
+      console.log('Scanner Web Service API: SKIPPED (disabled in settings)');
+    } else
     try {
       const [settingsRows] = await db.query(
         'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_api_url", "scanner_api_username", "scanner_api_password")'
       );
       const settingsMap = {};
       settingsRows.forEach(r => { settingsMap[r.setting_key] = r.setting_value; });
-      
+
       const apiUrl = settingsMap['scanner_api_url'];
       const apiUser = settingsMap['scanner_api_username'];
       const apiPass = settingsMap['scanner_api_password'];
-      
+
       if (apiUrl && apiUrl.trim()) {
         console.log(`Using configured secure external Scanner Web Service at: ${apiUrl}...`);
         const base64Image = buffer.toString('base64');
@@ -2135,7 +2449,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         if (apiUser && apiPass) {
           headers['Authorization'] = 'Basic ' + Buffer.from(`${apiUser}:${apiPass}`).toString('base64');
         }
-        
+
         const response = await fetch(`${apiUrl.trim()}/api/process`, {
           method: 'POST',
           headers,
@@ -2144,22 +2458,27 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
             List: [{ ImageData: { image: base64Image }, light: 6 }]
           })
         });
-        
+
         if (response.ok) {
           const respData = await response.json();
-          const parsed = parseRegulaResponse(respData);
-          if (parsed && (parsed.idNum || parsed.name)) {
-            console.log('Secure Web Service scan processed successfully:', parsed.idNum, parsed.name);
-            // If the scanner API didn't return a portrait, extract it from the raw image
-            if (!parsed.facePhotoBase64) {
+          externalParsed = parseRegulaResponse(respData);
+          const isExternalNameValid = externalParsed && externalParsed.name &&
+            !PLACEHOLDER_NAMES.has(externalParsed.name) &&
+            !isGarbageOcrName(externalParsed.name);
+
+          if (isExternalNameValid && externalParsed.idNum) {
+            console.log('Secure Web Service scan processed successfully:', externalParsed.idNum, externalParsed.name);
+            if (!externalParsed.facePhotoBase64) {
               try {
-                const croppedFace = await extractFace(buffer, parsed.docType);
-                if (croppedFace) parsed.facePhotoBase64 = croppedFace;
-              } catch (_) {}
+                const croppedFace = await extractFace(buffer, externalParsed.docType);
+                if (croppedFace) externalParsed.facePhotoBase64 = croppedFace;
+              } catch (_) { }
             }
-            parsed.phone = parsed.phone || '';
-            parsed.lowQuality = !parsed.idNum || !parsed.name || PLACEHOLDER_NAMES.has(parsed.name);
-            return parsed;
+            externalParsed.phone = externalParsed.phone || '';
+            externalParsed.lowQuality = false;
+            return externalParsed;
+          } else if (externalParsed) {
+            console.log('Secure Web Service scan returned data but name is missing/placeholder. Proceeding with local PaddleOCR...');
           }
         } else {
           console.warn(`External Scanner Web Service returned error status: ${response.status}`);
@@ -2169,19 +2488,70 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       console.warn('Database check or Web Service OCR query failed:', dbErr.message);
     }
 
+    // ── 0.5. Try local high-accuracy Python PaddleOCR (RapidOCR onnxruntime) ──────
+    if (!ocrPaddleEnabled) {
+      console.log('PaddleOCR: SKIPPED (disabled in settings)');
+    } else
+    try {
+      console.log('Running local PaddleOCR (RapidOCR onnxruntime)...');
+      const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer);
+      const paddleText = typeof paddleRes === 'string' ? paddleRes : paddleRes?.text;
+
+      if (paddleText) {
+        let paddleData = parseDocumentDetails(fileName, docType, paddleText);
+
+        // Merge companion file or external scanner ID/dates if missing from initial paddle parse
+        if (paddleData) {
+          if (companionData) {
+            if (!paddleData.idNum && companionData.idNum) paddleData.idNum = companionData.idNum;
+            if (!paddleData.dob && companionData.dob) paddleData.dob = companionData.dob;
+            if (!paddleData.exp && companionData.expiryDate) paddleData.exp = companionData.expiryDate;
+            if (!paddleData.nat && companionData.nationality) paddleData.nat = companionData.nationality;
+          }
+          if (externalParsed) {
+            if (!paddleData.idNum && externalParsed.idNum) paddleData.idNum = externalParsed.idNum;
+            if (!paddleData.dob && externalParsed.dob) paddleData.dob = externalParsed.dob;
+            if (!paddleData.exp && externalParsed.expiryDate) paddleData.exp = externalParsed.expiryDate;
+            if (!paddleData.nat && externalParsed.nationality) paddleData.nat = externalParsed.nationality;
+          }
+        }
+
+        const isPaddleGood = !isResultLowQuality(paddleData) &&
+          paddleData.name &&
+          !PLACEHOLDER_NAMES.has(paddleData.name) &&
+          !isGarbageOcrName(paddleData.name);
+
+        if (isPaddleGood) {
+          console.log(`PaddleOCR Success: ID="${paddleData.idNum}" Name="${paddleData.name}" DocType="${paddleData.docType}"`);
+          const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
+          if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
+          paddleData.lowQuality = false;
+          return paddleData;
+        } else {
+          console.log(`PaddleOCR extracted initial text (ID="${paddleData.idNum}", Name="${paddleData.name}"). Proceeding with full pipeline verification...`);
+        }
+      }
+    } catch (pError) {
+      console.warn('PaddleOCR step skipped due to execution error:', pError.message);
+    }
+
     // ── 1. Try Google Cloud Vision API (free tier: 1000 req/month) ───────────────
     // Key is read from DB settings first (configurable in app UI), then .env fallback.
     // Vision gives much higher OCR accuracy than Tesseract and completes in ~1-2s.
     let visionApiKey = null;
-    try {
-      const [vkRows] = await db.query(
-        'SELECT setting_value FROM settings WHERE setting_key = "vision_api_key" LIMIT 1'
-      );
-      visionApiKey = vkRows[0]?.setting_value?.trim() || null;
-    } catch (_) {}
-    if (!visionApiKey) visionApiKey = (process.env.VISION_API_KEY || '').trim() || null;
+    if (!ocrVisionEnabled) {
+      console.log('Google Cloud Vision: SKIPPED (disabled in settings)');
+    } else {
+      try {
+        const [vkRows] = await db.query(
+          'SELECT setting_value FROM settings WHERE setting_key = "vision_api_key" LIMIT 1'
+        );
+        visionApiKey = vkRows[0]?.setting_value?.trim() || null;
+      } catch (_) { }
+      if (!visionApiKey) visionApiKey = (process.env.VISION_API_KEY || '').trim() || null;
+    }
 
-    if (visionApiKey) {
+    if (ocrVisionEnabled && visionApiKey) {
       // Rotate + resize FIRST so Vision also gets an optimal-sized image
       let visionBuffer = buffer;
       try {
@@ -2193,19 +2563,73 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
           .rotate()
           .resize({ width: targetW, fit: 'inside', withoutEnlargement: false })
           .toBuffer();
-      } catch (_) {}
+      } catch (_) { }
 
       const visionText = await performVisionApiOcr(visionBuffer.toString('base64'), visionApiKey);
       if (visionText) {
-        const details = parseDocumentDetails(fileName, docType, visionText);
+        let details = parseDocumentDetails(fileName, docType, visionText);
+
+        // Dedicated QID Footer Crop pass if name is missing/garbage
+        if ((details.docType === 'QID' || docType === 'QID') && (PLACEHOLDER_NAMES.has(details.name) || isGarbageOcrName(details.name))) {
+          try {
+            const meta = await sharp(visionBuffer).metadata();
+            if (meta && meta.height && meta.width) {
+              const top = Math.floor(meta.height * 0.72);
+              const footerHeight = meta.height - top;
+              const footerBuffer = await sharp(visionBuffer)
+                .extract({ left: 0, top, width: meta.width, height: footerHeight })
+                .grayscale()
+                .normalize()
+                .sharpen({ sigma: 1.5 })
+                .resize({ width: meta.width * 2 })
+                .png()
+                .toBuffer();
+
+              const footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', { tessedit_pageseg_mode: '11' });
+              const footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+              if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+                details.name = footerName;
+              }
+            }
+          } catch (_) { }
+        }
+
+        // Auto-Orientation Fallback (180°, 90°, 270°) for upside-down scans
+        if (isResultLowQuality(details) || PLACEHOLDER_NAMES.has(details.name) || isGarbageOcrName(details.name)) {
+          for (const angle of [180, 90, 270]) {
+            try {
+              console.log(`Vision OCR auto-orienting QID scan: testing ${angle}° rotation...`);
+              const testBuffer = await sharp(visionBuffer).rotate(angle).toBuffer();
+              const testVisionText = await performVisionApiOcr(testBuffer.toString('base64'), visionApiKey);
+              if (testVisionText) {
+                const testData = parseDocumentDetails(fileName, docType, testVisionText);
+                if (!isResultLowQuality(testData) && testData.name && !isGarbageOcrName(testData.name)) {
+                  console.log(`Vision Success at ${angle}° rotation: ID="${testData.idNum}" Name="${testData.name}"`);
+                  details = testData;
+                  visionBuffer = testBuffer;
+                  break;
+                }
+              }
+            } catch (_) { }
+          }
+        }
+
         // Face crop from pre-rotated vision buffer
         const croppedFace = await extractFace(visionBuffer, details.docType);
         if (croppedFace) details.facePhotoBase64 = croppedFace;
-        details.lowQuality = !details.idNum || !details.name || PLACEHOLDER_NAMES.has(details.name);
-        console.log(`Vision OCR result: name="${details.name}" id="${details.idNum}"`);
-        return details;
+        details.lowQuality = isResultLowQuality(details);
+        console.log(`Vision OCR result: name="${details.name}" id="${details.idNum}" lowQuality=${details.lowQuality}`);
+        if (!details.lowQuality) {
+          return details;
+        }
       }
-      // Vision failed / quota hit — fall through to Tesseract below
+      // Vision failed / low quality — fall through to Tesseract multi-pass below
+    }
+
+    // Tesseract is always available as a safety fallback even if disabled,
+    // but we log a warning when disabled to inform the admin.
+    if (!ocrTesseractEnabled) {
+      console.log('Tesseract OCR: toggle is disabled, but continuing as safety fallback to prevent empty scan result.');
     }
 
     // Resolve Tesseract lang data path — prefer local backend copy (eng.traineddata),
@@ -2220,14 +2644,20 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       tessedit_pageseg_mode: '6'
     };
 
-    const runOcrOnBuffer = async (procBuffer, lang = 'eng') => {
+    const runOcrOnBuffer = async (procBuffer, lang = 'eng', customOpts = {}) => {
+      const opts = {
+        ...(langDir ? { langPath: langDir, cachePath: langDir } : {}),
+        gzip: false,
+        tessedit_pageseg_mode: '6',
+        ...customOpts
+      };
       try {
-        const ocrRes = await Tesseract.recognize(procBuffer, lang, OCR_OPTS);
+        const ocrRes = await Tesseract.recognize(procBuffer, lang, opts);
         return ocrRes?.data?.text || '';
       } catch (localErr) {
         console.warn('Local OCR failed, retrying eng:', localErr.message);
         try {
-          const ocrRes = await Tesseract.recognize(procBuffer, 'eng', OCR_OPTS);
+          const ocrRes = await Tesseract.recognize(procBuffer, 'eng', opts);
           return ocrRes?.data?.text || '';
         } catch (e) {
           return '';
@@ -2249,8 +2679,8 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       if (!isIdValid(data.idNum, data.docType)) return true;
       if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
       if (data.name.trim().length <= 3) return true;
-      // Check for actual Tesseract MRZ noise artifacts (3+ repeating K/X/C/L or LKL/CLL noise), NOT normal names like HUSSEIN or HASSAN (which contain 'ss').
-      if (/(?:([KXCL])\1{2,}|LKL|CLL|X[KX]X|<{2,})/i.test(data.name)) return true;
+      if (isGarbageOcrName(data.name)) return true;
+      if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
       return false;
     };
 
@@ -2316,7 +2746,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       const ocrTextPass2 = await runOcrOnBuffer(pass2Buffer, 'eng');
       const detectedDataPass2 = parseDocumentDetails(fileName, docType, ocrTextPass2);
       if (!isResultLowQuality(detectedDataPass2) ||
-          (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType))) {
+        (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType))) {
         detectedData = detectedDataPass2;
         ocrText = ocrTextPass2; // keep best text for pass 3 reuse
       }
@@ -2332,9 +2762,112 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       }
     }
 
+    // ── PASS 4: Dedicated QID Footer Bar Crop (2x PNG Scaling + PSM 11/6) ──────
+    // Directly targets the bottom blue footer bar containing "Name: <FULL NAME>"
+    if (detectedData.docType === 'QID' || docType === 'QID' || PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name)) {
+      try {
+        console.log('Pass 4: Running Dedicated QID Footer OCR Crop (2x PNG + PSM 11/6)...');
+        const meta = await sharp(rotatedBuffer).metadata();
+        if (meta && meta.height && meta.width) {
+          const top = Math.floor(meta.height * 0.72);
+          const footerHeight = meta.height - top;
+          const footerBuffer = await sharp(rotatedBuffer)
+            .extract({ left: 0, top, width: meta.width, height: footerHeight })
+            .grayscale()
+            .normalize()
+            .sharpen({ sigma: 1.5 })
+            .resize({ width: meta.width * 2 })
+            .png()
+            .toBuffer();
+
+          // Try PSM 11 (sparse text) and PSM 6 (single block)
+          let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+            tessedit_pageseg_mode: '11',
+            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
+          });
+
+          if (!footerOcrText || footerOcrText.trim().length < 4) {
+            footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+              tessedit_pageseg_mode: '6',
+              tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
+            });
+          }
+
+          console.log('QID Footer Raw OCR Text:', footerOcrText);
+          let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+
+          // Direct Name: regex match on 2x scaled footer strip text
+          if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
+            const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME)\s*:\s*([A-Za-z\s'-]+)/i);
+            if (nameMatch && nameMatch[1]) {
+              const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
+              const cleanedMatch = cleanExtractedName(rawMatch);
+              if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
+                footerName = cleanedMatch;
+              }
+            }
+          }
+
+          if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+            console.log('QID Footer Name Extracted Successfully:', footerName);
+            detectedData.name = footerName;
+          }
+        }
+      } catch (footerErr) {
+        console.warn('Dedicated QID Footer OCR crop error:', footerErr.message);
+      }
+    }
+
+    // ── PASS 5: Auto-Orientation Fallback (180°, 90°, 270°) for upside-down scans ─
+    if (isResultLowQuality(detectedData) || PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name)) {
+      const angles = [180, 90, 270];
+      for (const angle of angles) {
+        try {
+          console.log(`Auto-orienting QID scan: testing ${angle}° rotation...`);
+          const testBuffer = await sharp(rotatedBuffer).rotate(angle).toBuffer();
+          const testPassBuffer = await sharp(testBuffer).grayscale().normalize().sharpen({ sigma: 1 }).toBuffer();
+          const testOcrText = await runOcrOnBuffer(testPassBuffer, 'eng');
+          const testData = parseDocumentDetails(fileName, docType, testOcrText);
+
+          // Dedicated footer crop on rotated buffer
+          const testMeta = await sharp(testBuffer).metadata();
+          if (testMeta && testMeta.height && testMeta.width) {
+            const top = Math.floor(testMeta.height * 0.72);
+            const footerHeight = testMeta.height - top;
+            const footerBuffer = await sharp(testBuffer)
+              .extract({ left: 0, top, width: testMeta.width, height: footerHeight })
+              .grayscale()
+              .normalize()
+              .sharpen({ sigma: 1.5 })
+              .resize({ width: testMeta.width * 2 })
+              .png()
+              .toBuffer();
+
+            const footerText = await runOcrOnBuffer(footerBuffer, 'eng', {
+              tessedit_pageseg_mode: '11',
+              tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
+            });
+            const footerName = extractQidNameFromText(footerText) || extractNameWithFallback(footerText);
+            if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+              testData.name = footerName;
+            }
+          }
+
+          if (!isResultLowQuality(testData) && testData.name && !isGarbageOcrName(testData.name)) {
+            console.log(`Success! Found valid QID details at ${angle}° rotation: ID="${testData.idNum}" Name="${testData.name}"`);
+            detectedData = testData;
+            rotatedBuffer = testBuffer; // update rotated buffer for correct face cropping
+            break;
+          }
+        } catch (rotErr) {
+          console.warn(`Rotation ${angle}° failed:`, rotErr.message);
+        }
+      }
+    }
+
     // ── AWAIT parallel face crop ──────────────────────────────────────────────────
     console.log('Applying face crop...');
-    const croppedFace = await faceCropPromise;
+    const croppedFace = await extractFace(rotatedBuffer, docType);
     if (croppedFace) {
       detectedData.facePhotoBase64 = croppedFace;
     }
