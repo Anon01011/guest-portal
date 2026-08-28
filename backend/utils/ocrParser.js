@@ -1260,8 +1260,10 @@ const normalizeLatinName = (str) => String(str || '').toUpperCase()
 
 const cleanExtractedName = (str) => {
   let n = normalizeLatinName(str);
-  n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '').trim();
-  n = n.replace(/\s+(?:NAME|NAM|AME)\s*$/i, '').trim();
+  n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '')
+    .replace(/^NARNE\s+/i, '').replace(/^NAINE\s+/i, '').replace(/^NARN\s+/i, '')
+    .replace(/^NAIN\s+/i, '').replace(/^NME\s+/i, '').replace(/^NAM\s+/i, '').trim();
+  n = n.replace(/\s+(?:NAME|NAM|AME|NARNE|NAINE|NARN|NAIN|NME)\s*$/i, '').trim();
   // Only drop trailing single-letter noise when it is truly isolated (not a valid 2-letter suffix like AL, BIN, MD)
   const KEEP_SUFFIXES = new Set(['AL', 'EL', 'BIN', 'ABU', 'MD', 'DR', 'MR', 'MS']);
   const parts = n.split(/\s+/);
@@ -1277,8 +1279,8 @@ const cleanExtractedName = (str) => {
 const stripHeaderAndLabelWords = (str) => {
   if (!str) return '';
   return String(str)
-    // Strip label words
-    .replace(/(?:full\s*name|given\s*names?|sur\s*name|\bnaine\b|\bnome\b|\bnane\b|\bnamo\b|\bname\b|\bnam\b|\bame\b|الاسم|الاسم\s*الكامل)/gi, ' ')
+    // Strip label words (including common OCR misreads like NARNE, NARN, NAIN, WAME, NME)
+    .replace(/(?:full\s*name|given\s*names?|sur\s*name|\bnaine\b|\bnome\b|\bnane\b|\bnamo\b|\bname\b|\bnam\b|\bame\b|\bnarne\b|\bnarn\b|\bnain\b|\bwame\b|\bnme\b|الاسم|الاسم\s*الكامل)/gi, ' ')
     // Strip watermark phrases & card header phrases overlaid on watermarked QID cards
     .replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|republic\s*of|occupation|nationality|id\.?\s*no\.?|d\.?o\.?b\.?|expiry|\bministry\b|\binterior\b|\bpermit\b|\bresidency\b|\bqatar\b|\bstate\b)/gi, ' ')
     .replace(/[^A-Za-z\s'-]/g, ' ')
@@ -1362,8 +1364,8 @@ const extractQidNameFromText = (ocrText) => {
   let bestName = '';
   let bestScore = 0;
 
-  // English-only name label pattern
-  const explicitEnglishLabelPattern = /(?:^|\b)(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME)\s*[:\s\/-]/i;
+  // English-only name label pattern (handles all common OCR misreads: NARNE, NARN, NAINE, WAME, NME, etc.)
+  const explicitEnglishLabelPattern = /(?:^|\b)(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME|NARNE|NARN|NAIN|WAME|NME|NAM|AME|NOM|PRENOM)\s*[:\s\/-]?/i;
 
   // Pass 1: Same-line Inline Name Extraction for explicit English Name labels (e.g. Name: ABDUL RAHMAN AL-MANNAI)
   for (let i = 0; i < lines.length; i++) {
@@ -1371,7 +1373,7 @@ const extractQidNameFromText = (ocrText) => {
     if (!explicitEnglishLabelPattern.test(line)) continue;
 
     // Suffix after "Name:" label on the exact same line
-    const match = line.match(/(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME)\s*[:\s\/-]\s*([A-Za-z\s'-]+)/i);
+    const match = line.match(/(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME|NARNE|NARN|NAIN|WAME|NME|NAM|AME|NOM|PRENOM)\s*[:\s\/-]?\s*([A-Za-z\s'-]+)/i);
     if (match && match[1]) {
       const inlineCandidate = stripHeaderAndLabelWords(match[1]);
       if (inlineCandidate && inlineCandidate.length >= 3 && !isGarbageOcrName(inlineCandidate)) {
