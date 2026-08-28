@@ -303,12 +303,15 @@ const extractNameWithFallback = (ocrText) => {
       const scoreInline = getUppercaseScore(cleanInline);
       const scoreNext = getUppercaseScore(cleanNext);
 
-      if (scoreNext > scoreInline && scoreNext >= 2) {
-        return formatNameCandidate(cleanNext);
-      } else if (cleanInline.length > 3 && scoreInline >= 1) {
-        return formatNameCandidate(cleanInline);
-      } else if (cleanNext.length > 3 && scoreNext >= 1) {
-        return formatNameCandidate(cleanNext);
+      const formattedInline = formatNameCandidate(cleanInline);
+      const formattedNext = formatNameCandidate(cleanNext);
+
+      if (scoreNext > scoreInline && scoreNext >= 2 && !isGarbageOcrName(formattedNext)) {
+        return formattedNext;
+      } else if (cleanInline.length > 3 && scoreInline >= 1 && !isGarbageOcrName(formattedInline)) {
+        return formattedInline;
+      } else if (cleanNext.length > 3 && scoreNext >= 1 && !isGarbageOcrName(formattedNext)) {
+        return formattedNext;
       }
     }
   }
@@ -331,16 +334,16 @@ const extractNameWithFallback = (ocrText) => {
     const upperWords = words.map(w => w.toUpperCase());
     if (upperWords.some(w => qidHeaderWords.has(w))) continue;
     const normalized = upperWords.join(' ').replace(/[^A-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (normalized.length >= 8 && normalized.length <= 55) {
+    if (normalized.length >= 8 && normalized.length <= 55 && !isGarbageOcrName(normalized)) {
       return normalized;
     }
   }
 
-  // Fallback B: If still nothing, try the regex match as last resort (but filter out short lowercase noise)
+  // Fallback B: If still nothing, try regex match (ensuring it is not garbage OCR)
   const nameMatch = ocrText.match(/(?:name|full\s+name|given\s+names|surname|ame|nam)[:\s]+([A-Za-z \t\.\-]+)/i);
   if (nameMatch) {
     const val = nameMatch[1].trim().replace(/\n/g, ' ').replace(/\s+/g, ' ').toUpperCase();
-    if (val.length > 5) return val;
+    if (val.length > 5 && !isGarbageOcrName(val)) return val;
   }
 
   return '';
@@ -1340,21 +1343,37 @@ const extractQidNameFromText = (ocrText) => {
   let bestName = '';
   let bestScore = 0;
 
-  // English-only name label pattern (DO NOT match Arabic 'الاسم' here because Arabic script produces Latin OCR garble)
+  // English-only name label pattern
   const explicitEnglishLabelPattern = /(?:^|\b)(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME)\s*[:\s\/-]/i;
 
-  // Pass 1: Explicit English Name Label Search (Name:, Name : , FULL NAME:)
+  // Pass 1: Same-line Inline Name Extraction for explicit English Name labels (e.g. Name: ABDUL RAHMAN AL-MANNAI)
   for (let i = 0; i < lines.length; i++) {
-    if (!explicitEnglishLabelPattern.test(lines[i])) continue;
+    const line = lines[i];
+    if (!explicitEnglishLabelPattern.test(line)) continue;
 
+    // Suffix after "Name:" label on the exact same line
+    const match = line.match(/(?:FULL\s*NAME|GIVEN\s*NAME|SUR\s*NAME|HOLDER\s*NAME|CARD\s*HOLDER|\bNAME\b|NAINE|NOME|NANE|NAMO|NRNE|NNME)\s*[:\s\/-]\s*([A-Za-z\s'-]+)/i);
+    if (match && match[1]) {
+      const inlineCandidate = stripHeaderAndLabelWords(match[1]);
+      if (inlineCandidate && inlineCandidate.length >= 3 && !isGarbageOcrName(inlineCandidate)) {
+        const words = inlineCandidate.split(/\s+/).filter(w => w.length >= 2 && !QID_HEADER_WORDS.has(w));
+        if (words.length >= 1) {
+          const cleanName = cleanExtractedName(words.join(' '));
+          if (cleanName && cleanName.length >= 3 && !isGarbageOcrName(cleanName)) {
+            console.log('QID Inline Name Matched Directly:', cleanName);
+            return cleanName;
+          }
+        }
+      }
+    }
+
+    // Next-line candidate if same-line was empty
     const candidateLines = [
       lines[i],
-      lines[i + 1] || '',
-      lines[i + 2] || ''
+      lines[i + 1] || ''
     ];
 
     for (const rawCandidate of candidateLines) {
-      // Skip lines containing Arabic script to prevent Arabic letter misreads from overriding English names
       if (/[\u0600-\u06FF]/.test(rawCandidate) && !/[A-Za-z]{3,}/.test(rawCandidate)) continue;
 
       const candidate = stripHeaderAndLabelWords(rawCandidate);
