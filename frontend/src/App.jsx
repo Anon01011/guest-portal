@@ -80,6 +80,11 @@ export default function App() {
   const [scannerApiUsername, setScannerApiUsername] = useState('');
   const [scannerApiPassword, setScannerApiPassword] = useState('');
   const [visionApiKey, setVisionApiKey] = useState('');
+  // OCR Engine toggles (default: all enabled)
+  const [ocrPaddleEnabled, setOcrPaddleEnabled] = useState(true);
+  const [ocrVisionEnabled, setOcrVisionEnabled] = useState(true);
+  const [ocrScannerApiEnabled, setOcrScannerApiEnabled] = useState(true);
+  const [ocrTesseractEnabled, setOcrTesseractEnabled] = useState(true);
 
   // Main App State
   const [dashboardDate, setDashboardDate] = useState('');
@@ -313,6 +318,11 @@ export default function App() {
         setScannerApiUsername(data.scanner_api_username || '');
         setScannerApiPassword(data.scanner_api_password || '');
         setVisionApiKey(data.vision_api_key || '');
+        // OCR engine toggles — default to enabled (true) if not yet set in DB
+        setOcrPaddleEnabled(data.ocr_paddle_enabled !== '0');
+        setOcrVisionEnabled(data.ocr_vision_enabled !== '0');
+        setOcrScannerApiEnabled(data.ocr_scanner_api_enabled !== '0');
+        setOcrTesseractEnabled(data.ocr_tesseract_enabled !== '0');
 
         // Default dashboard date to operational date if not set yet
         setDashboardDate(prev => prev || data.operational_date);
@@ -343,7 +353,11 @@ export default function App() {
           scannerApiUrl: apiUrl,
           scannerApiUsername: apiUsername,
           scannerApiPassword: apiPassword,
-          visionApiKey: visionApiKey
+          visionApiKey: visionApiKey,
+          ocrPaddleEnabled,
+          ocrVisionEnabled,
+          ocrScannerApiEnabled,
+          ocrTesseractEnabled
         })
       });
       if (res.ok) {
@@ -994,7 +1008,7 @@ export default function App() {
 
 
 
-    // If not a pre-registered sample, check if the record exists in the database
+    // Check if the record exists in the database
     try {
       const res = await fetchWithAuth(`/api/guests/lookup?q=${encodeURIComponent(query)}`);
       const data = await res.json();
@@ -1009,9 +1023,27 @@ export default function App() {
           return;
         }
         loadExistingGuest(data);
+        showToast(`Guest found: ${data.name} (ID: ${data.idNum})`, 'success');
+        setTimeout(() => {
+          guestCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
       } else {
         setSearchError(true);
-        showToast('No guest record found with this ID or Name', 'warn');
+        // Extract candidate ID if query is numeric / alphanumeric barcode
+        const cleanId = query.replace(/[^A-Za-z0-9]/g, '');
+        if (cleanId.length >= 6 && cleanId.length <= 20) {
+          clearForm();
+          setShowGuestCard(true);
+          setCardMode('new');
+          setFormIdNum(cleanId);
+          setFormDocType(/^\d{11}$/.test(cleanId) ? 'QID' : 'Passport');
+          showToast(`Scanned ID ${cleanId}: No existing record in DB. Pre-filled into New Entry form.`, 'info');
+          setTimeout(() => {
+            guestCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }, 100);
+        } else {
+          showToast('No guest record found with this ID or Name', 'warn');
+        }
       }
     } catch (err) {
       setSearchError(true);
@@ -2324,6 +2356,14 @@ export default function App() {
             setScannerApiPassword={setScannerApiPassword}
             visionApiKey={visionApiKey}
             setVisionApiKey={setVisionApiKey}
+            ocrPaddleEnabled={ocrPaddleEnabled}
+            setOcrPaddleEnabled={setOcrPaddleEnabled}
+            ocrVisionEnabled={ocrVisionEnabled}
+            setOcrVisionEnabled={setOcrVisionEnabled}
+            ocrScannerApiEnabled={ocrScannerApiEnabled}
+            setOcrScannerApiEnabled={setOcrScannerApiEnabled}
+            ocrTesseractEnabled={ocrTesseractEnabled}
+            setOcrTesseractEnabled={setOcrTesseractEnabled}
           />
         )}
 
@@ -2691,6 +2731,88 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* OCR Engine Configuration */}
+                <div style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingTop: '12px', marginTop: '8px' }}>
+                  <span className="fl" style={{ fontSize: '10px', fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <i className="ti ti-cpu"></i> OCR Scanning Engines (Enable / Disable)
+                  </span>
+
+                  <style>{`
+                    .modal-ocr-row { display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:6px; border:1px solid var(--border); background:rgba(0,0,0,0.02); margin-bottom:6px; }
+                    .modal-ocr-row:last-child { margin-bottom:0; }
+                    .modal-ocr-left { display:flex; align-items:center; gap:8px; }
+                    .modal-ocr-icon { width:26px; height:26px; border-radius:5px; display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0; }
+                    .modal-ocr-name { font-size:12px; font-weight:600; color:var(--text); }
+                    .modal-ocr-desc { font-size:10px; color:var(--text-muted); }
+                    .modal-ocr-switch { position:relative; display:inline-block; width:34px; height:19px; flex-shrink:0; }
+                    .modal-ocr-switch input { opacity:0; width:0; height:0; }
+                    .modal-ocr-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#ccc; border-radius:19px; transition:.2s; }
+                    .modal-ocr-slider:before { position:absolute; content:''; height:13px; width:13px; left:3px; bottom:3px; background:white; border-radius:50%; transition:.2s; }
+                    input:checked + .modal-ocr-slider { background:var(--primary,#0f4c81); }
+                    input:checked + .modal-ocr-slider:before { transform:translateX(15px); }
+                  `}</style>
+
+                  {/* PaddleOCR */}
+                  <div className="modal-ocr-row">
+                    <div className="modal-ocr-left">
+                      <div className="modal-ocr-icon" style={{ background: '#eff6ff' }}><i className="ti ti-cpu" style={{ color: '#2563eb' }} /></div>
+                      <div>
+                        <div className="modal-ocr-name">🤖 PaddleOCR <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Local ONNX - Recommended)</span></div>
+                        <div className="modal-ocr-desc">Runs locally on PC — highest accuracy &amp; sub-second speed.</div>
+                      </div>
+                    </div>
+                    <label className="modal-ocr-switch">
+                      <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => setOcrPaddleEnabled(e.target.checked)} />
+                      <span className="modal-ocr-slider" />
+                    </label>
+                  </div>
+
+                  {/* Secure Scanner Web Service */}
+                  <div className="modal-ocr-row">
+                    <div className="modal-ocr-left">
+                      <div className="modal-ocr-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
+                      <div>
+                        <div className="modal-ocr-name">🔐 Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
+                        <div className="modal-ocr-desc">Uses hardware scanner Web API URL.</div>
+                      </div>
+                    </div>
+                    <label className="modal-ocr-switch">
+                      <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => setOcrScannerApiEnabled(e.target.checked)} />
+                      <span className="modal-ocr-slider" />
+                    </label>
+                  </div>
+
+                  {/* Google Vision */}
+                  <div className="modal-ocr-row">
+                    <div className="modal-ocr-left">
+                      <div className="modal-ocr-icon" style={{ background: '#fefce8' }}><i className="ti ti-brand-google" style={{ color: '#ca8a04' }} /></div>
+                      <div>
+                        <div className="modal-ocr-name">🌐 Google Cloud Vision API <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Cloud OCR)</span></div>
+                        <div className="modal-ocr-desc">Requires Vision API key set in main Settings overlay.</div>
+                      </div>
+                    </div>
+                    <label className="modal-ocr-switch">
+                      <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => setOcrVisionEnabled(e.target.checked)} />
+                      <span className="modal-ocr-slider" />
+                    </label>
+                  </div>
+
+                  {/* Tesseract */}
+                  <div className="modal-ocr-row">
+                    <div className="modal-ocr-left">
+                      <div className="modal-ocr-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
+                      <div>
+                        <div className="modal-ocr-name">📄 Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Safety Fallback)</span></div>
+                        <div className="modal-ocr-desc">Always keeps a safety fallback so scans never fail.</div>
+                      </div>
+                    </div>
+                    <label className="modal-ocr-switch">
+                      <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => setOcrTesseractEnabled(e.target.checked)} />
+                      <span className="modal-ocr-slider" />
+                    </label>
                   </div>
                 </div>
               </div>

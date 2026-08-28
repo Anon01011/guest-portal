@@ -428,6 +428,133 @@ else {
     Write-Host "MySQL Workbench is already installed and ready." -ForegroundColor Gray
 }
 
+# 1.7. Check and Install Python & PaddleOCR (RapidOCR)
+Write-Host "`n[1.7/7] Detecting Python & PaddleOCR (RapidOCR onnxruntime)..." -ForegroundColor Green
+$script:pythonInstalled = $false
+$script:pythonPath = "N/A"
+
+$pythonCheck = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pythonCheck) {
+    $pythonCheck = Get-Command py -ErrorAction SilentlyContinue
+}
+
+if ($pythonCheck) {
+    $pythonVersion = & $pythonCheck.Source --version 2>&1
+    Write-Host "Python detected ($pythonVersion) at '$($pythonCheck.Source)'." -ForegroundColor Gray
+    $script:pythonInstalled = $true
+    $script:pythonPath = $pythonCheck.Source
+}
+else {
+    # Check standard install locations
+    $defaultPythonPaths = @(
+        "C:\Program Files\Python314\python.exe",
+        "C:\Program Files\Python313\python.exe",
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files\Python311\python.exe",
+        "C:\Program Files\Python310\python.exe",
+        "C:\Python314\python.exe",
+        "C:\Python313\python.exe",
+        "C:\Python312\python.exe",
+        "C:\Python311\python.exe",
+        "C:\Python310\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe"
+    )
+    foreach ($path in $defaultPythonPaths) {
+        if (Test-Path $path) {
+            Write-Host "Python executable found at '$path'." -ForegroundColor Gray
+            $script:pythonInstalled = $true
+            $script:pythonPath = $path
+            $pythonDir = Split-Path $path -Parent
+            $env:Path += ";$pythonDir;$pythonDir\Scripts"
+            break
+        }
+    }
+}
+
+if (-not $script:pythonInstalled) {
+    Write-Warning "Python 3.8+ is required for high-accuracy local PaddleOCR (RapidOCR) identity card scanning."
+    $installChoice = Read-Host -Prompt "Would you like to install Python 3.11 now? (Y/n)"
+    if ([string]::IsNullOrWhiteSpace($installChoice) -or $installChoice -eq 'y' -or $installChoice -eq 'Y') {
+        $wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+        if ($wingetCheck) {
+            Write-Host "Installing Python via winget..." -ForegroundColor Gray
+            $proc = Start-Process winget -ArgumentList "install Python.Python.3.11 --accept-source-agreements --accept-package-agreements" -Wait -PassThru
+            if ($proc.ExitCode -eq 0) {
+                Write-Host "Python installed successfully via winget." -ForegroundColor Gray
+                $script:pythonInstalled = $true
+            }
+            else {
+                Write-Warning "winget Python installation exited with code $($proc.ExitCode)."
+            }
+        }
+        if (-not $script:pythonInstalled) {
+            Write-Host "Downloading Python 3.11 Installer..." -ForegroundColor Gray
+            $pyMsi = Join-Path $env:TEMP "python-3.11.9-amd64.exe"
+            $pyUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+            try {
+                Invoke-WebRequest -Uri $pyUrl -OutFile $pyMsi
+                Write-Host "Installing Python silently for all users... This may take a minute." -ForegroundColor Yellow
+                $proc = Start-Process $pyMsi -ArgumentList "/passive InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait -PassThru
+                if ($proc.ExitCode -eq 0) {
+                    $script:pythonInstalled = $true
+                    Write-Host "Python installed successfully." -ForegroundColor Gray
+                }
+                else {
+                    Write-Warning "Python Installer exited with code $($proc.ExitCode)."
+                }
+            }
+            catch {
+                Write-Error "Failed to download or run Python Installer: $_"
+            }
+        }
+        
+        # Locate binary after fresh installation
+        $candidatePaths = @(
+            "C:\Program Files\Python314\python.exe",
+            "C:\Program Files\Python313\python.exe",
+            "C:\Program Files\Python311\python.exe",
+            "C:\Python311\python.exe",
+            "C:\Program Files\Python312\python.exe",
+            "C:\Python312\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+        )
+        foreach ($cand in $candidatePaths) {
+            if (Test-Path $cand) {
+                $script:pythonInstalled = $true
+                $script:pythonPath = $cand
+                $pDir = Split-Path $cand -Parent
+                $env:Path += ";$pDir;$pDir\Scripts"
+                break
+            }
+        }
+    }
+}
+
+# Verify / Install rapidocr_onnxruntime Python library using exact binary path
+if ($script:pythonInstalled) {
+    Write-Host "Checking RapidOCR (PaddleOCR) Python packages..." -ForegroundColor Gray
+    $pyExec = if (Test-Path $script:pythonPath) { $script:pythonPath } else { "python" }
+    
+    $ocrCheck = & $pyExec -c "import rapidocr_onnxruntime; print('OK')" 2>&1
+    if ($ocrCheck -match "OK") {
+        Write-Host "PaddleOCR (rapidocr_onnxruntime) is installed and ready." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Installing rapidocr_onnxruntime, onnxruntime, pillow, and numpy via pip..." -ForegroundColor Yellow
+        $pipProc = Start-Process $pyExec -ArgumentList "-m pip install rapidocr_onnxruntime onnxruntime pillow numpy --upgrade" -Wait -PassThru
+        if ($pipProc.ExitCode -eq 0) {
+            Write-Host "PaddleOCR Python packages installed successfully!" -ForegroundColor Green
+        }
+        else {
+            Write-Warning "pip package installation exited with code $($pipProc.ExitCode). You may need to run '$pyExec -m pip install rapidocr_onnxruntime' manually."
+        }
+    }
+}
+
 # 2. Download and install URL Rewrite
 Write-Host "`n[2/7] Installing IIS URL Rewrite Module..." -ForegroundColor Green
 $rewriteDllPath = "$env:SystemRoot\system32\inetsrv\rewrite.dll"

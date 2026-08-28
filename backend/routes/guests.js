@@ -18,6 +18,54 @@ const {
 
 const router = express.Router();
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+// Helper to get date directory path YYYY/MonthName/Day (e.g. 2026/August/22) based on date object or ISO date string
+const getYearMonthDayFolder = (baseDir, dateObj = new Date()) => {
+  let d = dateObj;
+  if (typeof dateObj === 'string') {
+    d = new Date(dateObj);
+    if (isNaN(d.getTime())) d = new Date();
+  }
+  const year = String(d.getFullYear());
+  const monthName = MONTH_NAMES[d.getMonth()] || 'January';
+  const day = String(d.getDate());
+  const targetDir = path.join(baseDir, year, monthName, day);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+  return targetDir;
+};
+
+// Helper to search for photocopy file across date subfolders and root folder
+const findPhotocopyFilePath = (baseDir, idNum) => {
+  if (!baseDir || !fs.existsSync(baseDir) || !idNum) return null;
+  const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
+
+  const searchQueue = [baseDir];
+  while (searchQueue.length > 0) {
+    const currentDir = searchQueue.shift();
+    try {
+      const items = fs.readdirSync(currentDir, { withFileTypes: true });
+      for (const ext of extensions) {
+        const candidate = path.join(currentDir, `${idNum}${ext}`);
+        if (fs.existsSync(candidate)) return candidate;
+        const candidateLower = path.join(currentDir, `${idNum}${ext.toLowerCase()}`);
+        if (fs.existsSync(candidateLower)) return candidateLower;
+      }
+      for (const item of items) {
+        if (item.isDirectory()) {
+          searchQueue.push(path.join(currentDir, item.name));
+        }
+      }
+    } catch (e) {}
+  }
+  return null;
+};
+
 // Public endpoint to serve scanned document copies (accessed by image tags without auth headers)
 router.get('/scan-copy/:idNum', async (req, res) => {
   try {
@@ -26,28 +74,21 @@ router.get('/scan-copy/:idNum', async (req, res) => {
       return res.status(400).json({ error: 'Invalid document ID format' });
     }
     const idNum = path.basename(rawIdNum);
-    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
 
-    // 1. Check permanent uploads first
+    // 1. Check permanent uploads first (search recursively across date folders)
     const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-    if (fs.existsSync(destDir)) {
-      for (const ext of extensions) {
-        const filePath = path.join(destDir, `${idNum}${ext.toLowerCase()}`);
-        if (fs.existsSync(filePath)) {
-          return res.sendFile(filePath);
-        }
-      }
+    const foundPath = findPhotocopyFilePath(destDir, idNum);
+    if (foundPath) {
+      return res.sendFile(foundPath);
     }
 
-    // 2. Fallback to check the temporary local scanner folder
+    // 2. Fallback to check the temporary/custom scanner folder (search recursively across archive/date folders)
     const [rows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
     const scannerFolder = rows[0]?.setting_value;
-    if (scannerFolder && fs.existsSync(scannerFolder)) {
-      for (const ext of extensions) {
-        const filePath = path.join(scannerFolder, `${idNum}${ext}`);
-        if (fs.existsSync(filePath)) {
-          return res.sendFile(filePath);
-        }
+    if (scannerFolder) {
+      const foundScannerPath = findPhotocopyFilePath(scannerFolder, idNum);
+      if (foundScannerPath) {
+        return res.sendFile(foundScannerPath);
       }
     }
     
@@ -85,25 +126,14 @@ const saveScannedCopy = async (idNum) => {
     const scannerFolder = rows[0]?.setting_value;
     if (!scannerFolder || !fs.existsSync(scannerFolder)) return;
 
-    // Check if files exist in the scanner output folder
-    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
-    let foundFile = null;
-    let foundExt = '';
-    for (const ext of extensions) {
-      const filePath = path.join(scannerFolder, `${idNum}${ext}`);
-      if (fs.existsSync(filePath)) {
-        foundFile = filePath;
-        foundExt = ext;
-        break;
-      }
-    }
+    // Search for file in scanner output folder (including archive/date subfolders)
+    const foundFile = findPhotocopyFilePath(scannerFolder, idNum);
 
     if (foundFile) {
-      const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-      if (!fs.existsSync(destDir)) {
-        fs.mkdirSync(destDir, { recursive: true });
-      }
-      const destPath = path.join(destDir, `${idNum}${foundExt.toLowerCase()}`);
+      const foundExt = path.extname(foundFile).toLowerCase() || '.jpg';
+      const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
+      const destDir = getYearMonthDayFolder(rootUploads);
+      const destPath = path.join(destDir, `${idNum}${foundExt}`);
       fs.copyFileSync(foundFile, destPath);
       console.log(`Successfully saved scanned copy for ID ${idNum} to ${destPath}`);
     }
@@ -118,23 +148,20 @@ const saveBase64Photocopy = async (idNum, base64Data) => {
     const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) return;
     const buffer = Buffer.from(matches[2], 'base64');
-    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
-    }
+    
+    const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
+    const destDir = getYearMonthDayFolder(rootUploads);
     const destPath = path.join(destDir, `${idNum}.jpg`);
     fs.writeFileSync(destPath, buffer);
-    console.log(`Saved base64 photocopy to uploads: ${destPath}`);
+    console.log(`Saved base64 photocopy to uploads date folder: ${destPath}`);
 
     const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
     const scannerFolder = settingsRows[0]?.setting_value;
     if (scannerFolder) {
-      if (!fs.existsSync(scannerFolder)) {
-        fs.mkdirSync(scannerFolder, { recursive: true });
-      }
-      const customPath = path.join(scannerFolder, `${idNum}.jpg`);
+      const archiveDir = getYearMonthDayFolder(path.join(scannerFolder, 'archive'));
+      const customPath = path.join(archiveDir, `${idNum}.jpg`);
       fs.writeFileSync(customPath, buffer);
-      console.log(`Saved base64 photocopy to custom folder: ${customPath}`);
+      console.log(`Saved base64 photocopy to custom folder archive: ${customPath}`);
     }
   } catch (err) {
     console.error('saveBase64Photocopy error:', err.message);
@@ -144,31 +171,24 @@ const saveBase64Photocopy = async (idNum, base64Data) => {
 const renamePhotocopy = async (oldIdNum, newIdNum) => {
   if (!oldIdNum || !newIdNum || oldIdNum === newIdNum) return;
   try {
-    const extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'];
-    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-    if (fs.existsSync(destDir)) {
-      for (const ext of extensions) {
-        const oldPath = path.join(destDir, `${oldIdNum}${ext.toLowerCase()}`);
-        if (fs.existsSync(oldPath)) {
-          const newPath = path.join(destDir, `${newIdNum}${ext.toLowerCase()}`);
-          fs.renameSync(oldPath, newPath);
-          console.log(`Renamed permanent photocopy from ${oldIdNum} to ${newIdNum}`);
-          break;
-        }
-      }
+    const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
+    const oldPath = findPhotocopyFilePath(rootUploads, oldIdNum);
+    if (oldPath) {
+      const ext = path.extname(oldPath).toLowerCase();
+      const newPath = path.join(path.dirname(oldPath), `${newIdNum}${ext}`);
+      fs.renameSync(oldPath, newPath);
+      console.log(`Renamed permanent photocopy from ${oldIdNum} to ${newIdNum} at ${newPath}`);
     }
 
     const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
     const scannerFolder = settingsRows[0]?.setting_value;
-    if (scannerFolder && fs.existsSync(scannerFolder)) {
-      for (const ext of extensions) {
-        const oldPath = path.join(scannerFolder, `${oldIdNum}${ext}`);
-        if (fs.existsSync(oldPath)) {
-          const newPath = path.join(scannerFolder, `${newIdNum}${ext}`);
-          fs.renameSync(oldPath, newPath);
-          console.log(`Renamed custom folder photocopy from ${oldIdNum} to ${newIdNum}`);
-          break;
-        }
+    if (scannerFolder) {
+      const oldScannerPath = findPhotocopyFilePath(scannerFolder, oldIdNum);
+      if (oldScannerPath) {
+        const ext = path.extname(oldScannerPath);
+        const newScannerPath = path.join(path.dirname(oldScannerPath), `${newIdNum}${ext}`);
+        fs.renameSync(oldScannerPath, newScannerPath);
+        console.log(`Renamed custom folder photocopy from ${oldIdNum} to ${newIdNum} at ${newScannerPath}`);
       }
     }
   } catch (err) {
@@ -206,21 +226,44 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Lookup guest by ID or name (checks deleted exact IDs to trigger restore)
+// Lookup guest by ID, extracted barcode QID, phone, or name (checks deleted exact IDs to trigger restore)
 router.get('/lookup', async (req, res) => {
-  const q = sanitizeStr(req.query.q, 100);
+  const rawQ = req.query.q || '';
+  const q = sanitizeStr(rawQ, 200);
   if (!q) {
     return res.status(400).json({ error: 'Search query is required' });
   }
   try {
-    // Check exact ID number match (includes deleted)
+    const cleanQ = q.trim().toLowerCase();
+
+    // 1. Check exact ID number match (includes deleted)
     let [rows] = await db.query(
       'SELECT * FROM guests WHERE LOWER(id_num) = ?',
-      [q.toLowerCase()]
+      [cleanQ]
     );
-    // If not found, check name match (only active)
+
+    // 2. If not found, try extracting 11-digit QID pattern from barcode payload (e.g. 29812345678 or 30112345678)
     if (rows.length === 0) {
-      const escapedQ = escapeLikeWildcards(q.toLowerCase());
+      const qidMatch = q.match(/\b([23]\d{10})\b/);
+      if (qidMatch) {
+        [rows] = await db.query(
+          'SELECT * FROM guests WHERE LOWER(id_num) = ?',
+          [qidMatch[1].toLowerCase()]
+        );
+      }
+    }
+
+    // 3. If not found, check if query matches phone number or contains ID
+    if (rows.length === 0) {
+      [rows] = await db.query(
+        'SELECT * FROM guests WHERE (LOWER(phone) = ? OR LOWER(id_num) LIKE ?) AND deleted = 0',
+        [cleanQ, `%${cleanQ}%`]
+      );
+    }
+
+    // 4. If not found, check name match (only active)
+    if (rows.length === 0) {
+      const escapedQ = escapeLikeWildcards(cleanQ);
       [rows] = await db.query(
         'SELECT * FROM guests WHERE LOWER(name) LIKE ? AND deleted = 0',
         [`%${escapedQ}%`]
@@ -775,22 +818,15 @@ router.post('/scan-detect', async (req, res) => {
     // Sanitize to prevent directory traversal / arbitrary file write
     detectedData.idNum = detectedData.idNum.replace(/[^a-zA-Z0-9_-]/g, '');
 
-    // Save permanently to uploads/photocopies
-    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
-    }
+    // Save permanently to uploads/photocopies/YYYY/MM/DD
+    const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
+    const destDir = getYearMonthDayFolder(rootUploads);
     const destPath = path.join(destDir, `${detectedData.idNum}${ext.toLowerCase()}`);
     fs.copyFileSync(targetScanFile, destPath);
     console.log(`Auto-saved photocopy permanently to uploads: ${destPath}`);
 
-    // Archive scan file inside scannerFolder/archive to prevent re-processing loops
-    const archiveDir = path.join(scannerFolder, 'archive');
-    if (!fs.existsSync(archiveDir)) {
-      try {
-        fs.mkdirSync(archiveDir, { recursive: true });
-      } catch (err) {}
-    }
+    // Archive scan file inside scannerFolder/archive/YYYY/MM/DD to prevent re-processing loops
+    const archiveDir = getYearMonthDayFolder(path.join(scannerFolder, 'archive'));
     const archivePath = path.join(archiveDir, `${detectedData.idNum}${ext.toLowerCase()}`);
     try {
       fs.renameSync(targetScanFile, archivePath);
@@ -862,25 +898,18 @@ router.post('/upload-detect', async (req, res) => {
     // Sanitize to prevent directory traversal / arbitrary file write
     detectedData.idNum = detectedData.idNum.replace(/[^a-zA-Z0-9_-]/g, '');
 
-    // Save permanently to uploads/photocopies
-    const destDir = path.join(__dirname, '..', 'uploads', 'photocopies');
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
-    }
+    // Save permanently to uploads/photocopies/YYYY/MM/DD
+    const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
+    const destDir = getYearMonthDayFolder(rootUploads);
     const destPath = path.join(destDir, `${detectedData.idNum}${ext.toLowerCase()}`);
     fs.writeFileSync(destPath, buffer);
     console.log(`Successfully saved uploaded photocopy for ID ${detectedData.idNum} to ${destPath}`);
  
-    // ALSO save to selected scanner folder's archive!
+    // ALSO save to selected scanner folder's archive/YYYY/MM/DD!
     const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
     const scannerFolder = settingsRows[0]?.setting_value;
     if (scannerFolder && fs.existsSync(scannerFolder)) {
-      const archiveDir = path.join(scannerFolder, 'archive');
-      if (!fs.existsSync(archiveDir)) {
-        try {
-          fs.mkdirSync(archiveDir, { recursive: true });
-        } catch (err) {}
-      }
+      const archiveDir = getYearMonthDayFolder(path.join(scannerFolder, 'archive'));
       const customPath = path.join(archiveDir, `${detectedData.idNum}${ext.toLowerCase()}`);
       fs.writeFileSync(customPath, buffer);
       console.log(`Saved copy to user selected custom archive folder: ${customPath}`);

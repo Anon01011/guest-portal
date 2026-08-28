@@ -51,6 +51,14 @@ export default function SettingsOverlay({
   setScannerApiPassword,
   visionApiKey,
   setVisionApiKey,
+  ocrPaddleEnabled,
+  setOcrPaddleEnabled,
+  ocrVisionEnabled,
+  setOcrVisionEnabled,
+  ocrScannerApiEnabled,
+  setOcrScannerApiEnabled,
+  ocrTesseractEnabled,
+  setOcrTesseractEnabled,
   licenseStatus
 }) {
   const [countdown, setCountdown] = React.useState('');
@@ -116,11 +124,11 @@ export default function SettingsOverlay({
       if (res.ok) {
         const data = await res.json();
         const rawList = Array.isArray(data) ? data : [];
-        
+
         // Detect stopped service warning objects
         const wiaStopped = rawList.some(s => s.id === 'warning_wia_stopped');
         const scardStopped = rawList.some(s => s.id === 'warning_scardsvr_stopped');
-        
+
         if (wiaStopped || scardStopped) {
           setServiceWarning({
             show: true,
@@ -128,7 +136,7 @@ export default function SettingsOverlay({
             scard: scardStopped
           });
         }
-        
+
         // Filter out warning items from the actual selectable dropdown list
         const cleanList = rawList.filter(s => s.type !== 'warning');
         setScannerList(cleanList);
@@ -189,15 +197,15 @@ export default function SettingsOverlay({
         <div className="card-title">
           <i className="ti ti-settings" style={{ fontSize: '18px' }} /> Settings &amp; Configuration
         </div>
-        <button 
-          className="card-close-btn" 
-          onClick={() => setActiveOverlay(null)} 
+        <button
+          className="card-close-btn"
+          onClick={() => setActiveOverlay(null)}
         >
           <i className="ti ti-x" />
         </button>
       </div>
       <div className="card-body settings-grid">
-        
+
         {/* Operational Date & Rollover */}
         <div>
           <h3 className="settings-section-title">
@@ -208,7 +216,7 @@ export default function SettingsOverlay({
               <i className="ti ti-activity" style={{ fontSize: '15px', color: 'var(--primary)' }} />
               <span>Current Active Date: <strong className="day-badge">{operationalDate}</strong></span>
             </div>
-            
+
             {/* Auto Rollover Card */}
             <div className="set-card" style={{ borderColor: dateMode === 'auto' ? 'var(--primary-mid)' : '' }}>
               <div className="set-card-hdr">
@@ -228,7 +236,7 @@ export default function SettingsOverlay({
                 </div>
               )}
             </div>
-            
+
             {/* Manual Rollover Card */}
             <div className="set-card" style={{ borderColor: dateMode === 'manual' ? 'var(--primary-mid)' : '' }}>
               <div className="set-card-hdr">
@@ -256,7 +264,7 @@ export default function SettingsOverlay({
                 </div>
               )}
             </div>
-            
+
             {/* Force Rollover */}
             <div style={{ marginTop: '6px' }}>
               <button type="button" className="btn btn-sm btn-warn" onClick={handleForceReset} style={{ display: 'inline-flex' }}>
@@ -265,7 +273,7 @@ export default function SettingsOverlay({
             </div>
           </div>
         </div>
-        
+
         {/* Change Security Password */}
         <div className="settings-pwd-column">
           <h3 className="settings-section-title">
@@ -341,104 +349,9 @@ export default function SettingsOverlay({
               <i className="ti ti-key" /> Update Password
             </button>
           </form>
-
-          {/* License Status */}
-          <div style={{ marginTop: '24px', borderTop: '.5px solid var(--border)', paddingTop: '20px' }}>
-            <h3 className="settings-section-title">
-              <i className="ti ti-certificate" style={{ fontSize: '16px' }} /> License Status
-            </h3>
-            {licenseStatus ? (
-              <div className="set-card" style={{
-                borderColor: licenseStatus.licensed ? 'rgba(29, 158, 117, 0.3)' : 'rgba(163, 45, 45, 0.3)',
-                background: licenseStatus.licensed ? 'rgba(29, 158, 117, 0.03)' : 'rgba(163, 45, 45, 0.03)',
-                position: 'relative',
-                overflow: 'hidden'
-              }}>
-                <div style={{
-                  position: 'absolute',
-                  top: 0,
-                  right: 0,
-                  width: '60px',
-                  height: '60px',
-                  background: licenseStatus.licensed ? 'var(--accent)' : '#a32d2d',
-                  opacity: 0.08,
-                  borderRadius: '0 0 0 100%'
-                }} />
-                
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-                    Current License
-                  </span>
-                  <span style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '4px 10px',
-                    borderRadius: '20px',
-                    fontSize: '11px',
-                    fontWeight: '700',
-                    background: licenseStatus.licensed ? '#e1f5ee' : '#fcebeb',
-                    color: licenseStatus.licensed ? '#0f6e56' : '#a32d2d',
-                    border: licenseStatus.licensed ? '1px solid rgba(29,158,117,0.3)' : '1px solid rgba(163,45,45,0.3)'
-                  }}>
-                    <span style={{
-                      width: '6px',
-                      height: '6px',
-                      borderRadius: '50%',
-                      background: licenseStatus.licensed ? '#1d9e75' : '#a32d2d'
-                    }} />
-                    {licenseStatus.licensed ? 'Active' : 'Invalid'}
-                  </span>
-                </div>
-                
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px' }}>
-                  {licenseStatus.clientName && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Licensed To:</span>
-                      <span style={{ fontWeight: '600', color: 'var(--text)' }}>{licenseStatus.clientName}</span>
-                    </div>
-                  )}
-                  
-                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
-                    <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Key Code:</span>
-                    <span style={{ fontFamily: 'monospace', fontWeight: '600', color: 'var(--text)', letterSpacing: '0.5px' }}>
-                      {licenseStatus.keyPartial || 'FSQTAR-DEMO-MODE'}
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
-                    <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Expires On:</span>
-                    <span style={{ fontWeight: '600', color: 'var(--text)' }}>
-                      {licenseStatus.expiresAt ? new Date(licenseStatus.expiresAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : 'Never (Lifetime)'}
-                    </span>
-                  </div>
-                  
-                  {licenseStatus.reason && !licenseStatus.licensed && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: '#fff', padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(163,45,45,0.1)', color: '#a32d2d', marginTop: '4px' }}>
-                      <span style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase' }}>Error Details:</span>
-                      <span style={{ fontSize: '11px', lineHeight: 1.4 }}>{licenseStatus.reason}</span>
-                    </div>
-                  )}
-
-                  {licenseStatus.deviceId && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '6px' }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Machine ID:</span>
-                      <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--text-muted)', userSelect: 'all' }}>
-                        {licenseStatus.deviceId}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px' }}>
-                <i className="ti ti-loader rotate" style={{ marginRight: '6px' }} /> Loading license status...
-              </div>
-            )}
-          </div>
         </div>
 
-        {/* Update Guest Deletion PIN Section */}
+        {/* Update Guest Deletion PIN & License Section */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <h3 className="settings-section-title">
             <i className="ti ti-shield" style={{ fontSize: '16px' }} /> Guest Deletion Authorization PIN
@@ -502,6 +415,101 @@ export default function SettingsOverlay({
               <i className="ti ti-shield-check" /> Update PIN
             </button>
           </form>
+
+          {/* License Status Widget */}
+          <div style={{ marginTop: '16px', borderTop: '.5px solid var(--border)', paddingTop: '16px' }}>
+            <h3 className="settings-section-title">
+              <i className="ti ti-certificate" style={{ fontSize: '16px' }} /> License Status
+            </h3>
+            {licenseStatus ? (
+              <div className="set-card" style={{
+                borderColor: licenseStatus.licensed ? 'rgba(29, 158, 117, 0.3)' : 'rgba(163, 45, 45, 0.3)',
+                background: licenseStatus.licensed ? 'rgba(29, 158, 117, 0.03)' : 'rgba(163, 45, 45, 0.03)',
+                position: 'relative',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  right: 0,
+                  width: '60px',
+                  height: '60px',
+                  background: licenseStatus.licensed ? 'var(--accent)' : '#a32d2d',
+                  opacity: 0.08,
+                  borderRadius: '0 0 0 100%'
+                }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                    Current License
+                  </span>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    fontSize: '11px',
+                    fontWeight: '700',
+                    background: licenseStatus.licensed ? '#e1f5ee' : '#fcebeb',
+                    color: licenseStatus.licensed ? '#0f6e56' : '#a32d2d',
+                    border: licenseStatus.licensed ? '1px solid rgba(29,158,117,0.3)' : '1px solid rgba(163,45,45,0.3)'
+                  }}>
+                    <span style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      background: licenseStatus.licensed ? '#1d9e75' : '#a32d2d'
+                    }} />
+                    {licenseStatus.licensed ? 'Active' : 'Invalid'}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px' }}>
+                  {licenseStatus.clientName && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
+                      <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Licensed To:</span>
+                      <span style={{ fontWeight: '600', color: 'var(--text)' }}>{licenseStatus.clientName}</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
+                    <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Key Code:</span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: '600', color: 'var(--text)', letterSpacing: '0.5px' }}>
+                      {licenseStatus.keyPartial || 'FSQTAR-DEMO-MODE'}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px dashed rgba(0,0,0,0.05)' }}>
+                    <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Expires On:</span>
+                    <span style={{ fontWeight: '600', color: 'var(--text)' }}>
+                      {licenseStatus.expiresAt ? new Date(licenseStatus.expiresAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : 'Never (Lifetime)'}
+                    </span>
+                  </div>
+
+                  {licenseStatus.reason && !licenseStatus.licensed && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: '#fff', padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(163,45,45,0.1)', color: '#a32d2d', marginTop: '4px' }}>
+                      <span style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase' }}>Error Details:</span>
+                      <span style={{ fontSize: '11px', lineHeight: 1.4 }}>{licenseStatus.reason}</span>
+                    </div>
+                  )}
+
+                  {licenseStatus.deviceId && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '6px' }}>
+                      <span style={{ color: 'var(--text-muted)', fontWeight: '500' }}>Machine ID:</span>
+                      <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--text-muted)', userSelect: 'all' }}>
+                        {licenseStatus.deviceId}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px' }}>
+                <i className="ti ti-loader rotate" style={{ marginRight: '6px' }} /> Loading license status...
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Scanner Hardware & Folder Configuration */}
@@ -602,7 +610,7 @@ export default function SettingsOverlay({
                 <i className="ti ti-shield-lock" style={{ fontSize: '15px' }} />
                 Secure Scanner Web Service API (Regula / Thales / Network)
               </label>
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
                 <div>
                   <span className="pwd-label" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Scanner Web Service URL</span>
@@ -644,9 +652,9 @@ export default function SettingsOverlay({
                         onChange={(e) => setScannerApiPassword(e.target.value)}
                         className="pwd-input"
                       />
-                      <button 
-                        type="button" 
-                        onClick={() => setShowScannerApiPass(!showScannerApiPass)} 
+                      <button
+                        type="button"
+                        onClick={() => setShowScannerApiPass(!showScannerApiPass)}
                         className="pwd-toggle-btn"
                         style={{ background: 'none', border: 'none', position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                       >
@@ -689,13 +697,112 @@ export default function SettingsOverlay({
               </div>
             </div>
 
+            {/* OCR Engine Configuration */}
+            <div style={{ marginTop: '16px', borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingTop: '14px' }}>
+              <label className="pwd-label" style={{ fontWeight: '700', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                <i className="ti ti-cpu" style={{ fontSize: '15px' }} />
+                OCR Engine Configuration
+                <span style={{ fontWeight: '400', fontSize: '10.5px', color: 'var(--text-muted)', marginLeft: '4px' }}>Enable / Disable scanning engines</span>
+              </label>
+
+              {/* Inline toggle CSS */}
+              <style>{`
+                .ocr-toggle-row { display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border-radius:7px; border:1px solid var(--border); background:rgba(0,0,0,0.02); margin-bottom:7px; }
+                .ocr-toggle-row:last-child { margin-bottom:0; }
+                .ocr-toggle-left { display:flex; align-items:center; gap:9px; }
+                .ocr-toggle-icon { width:30px; height:30px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
+                .ocr-toggle-name { font-size:12.5px; font-weight:600; color:var(--text); }
+                .ocr-toggle-desc { font-size:10.5px; color:var(--text-muted); margin-top:1px; }
+                .ocr-switch { position:relative; display:inline-block; width:38px; height:21px; flex-shrink:0; }
+                .ocr-switch input { opacity:0; width:0; height:0; }
+                .ocr-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#ccc; border-radius:21px; transition:.25s; }
+                .ocr-slider:before { position:absolute; content:''; height:15px; width:15px; left:3px; bottom:3px; background:white; border-radius:50%; transition:.25s; }
+                input:checked + .ocr-slider { background:var(--primary,#0f4c81); }
+                input:checked + .ocr-slider:before { transform:translateX(17px); }
+                .ocr-badge-on { font-size:10px; font-weight:700; color:#166534; background:#dcfce7; padding:2px 7px; border-radius:10px; }
+                .ocr-badge-off { font-size:10px; font-weight:700; color:#991b1b; background:#fee2e2; padding:2px 7px; border-radius:10px; }
+              `}</style>
+
+              {/* PaddleOCR */}
+              <div className="ocr-toggle-row">
+                <div className="ocr-toggle-left">
+                  <div className="ocr-toggle-icon" style={{ background: '#eff6ff' }}><i className="ti ti-cpu" style={{ color: '#2563eb' }} /></div>
+                  <div>
+                    <div className="ocr-toggle-name">🤖 PaddleOCR <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(local Python/ONNX)</span></div>
+                    <div className="ocr-toggle-desc">Fastest & most accurate. Runs locally — no internet required. <strong>Recommended ON.</strong></div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={ocrPaddleEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrPaddleEnabled ? 'ON' : 'OFF'}</span>
+                  <label className="ocr-switch">
+                    <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => setOcrPaddleEnabled(e.target.checked)} />
+                    <span className="ocr-slider" />
+                  </label>
+                </div>
+              </div>
+
+              {/* Scanner Web Service */}
+              <div className="ocr-toggle-row">
+                <div className="ocr-toggle-left">
+                  <div className="ocr-toggle-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
+                  <div>
+                    <div className="ocr-toggle-name">🔐 Secure Scanner Web Service <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Regula / Thales)</span></div>
+                    <div className="ocr-toggle-desc">Uses the Scanner API URL above. Only active when URL is configured.</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={ocrScannerApiEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrScannerApiEnabled ? 'ON' : 'OFF'}</span>
+                  <label className="ocr-switch">
+                    <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => setOcrScannerApiEnabled(e.target.checked)} />
+                    <span className="ocr-slider" />
+                  </label>
+                </div>
+              </div>
+
+              {/* Google Vision */}
+              <div className="ocr-toggle-row">
+                <div className="ocr-toggle-left">
+                  <div className="ocr-toggle-icon" style={{ background: '#fefce8' }}><i className="ti ti-brand-google" style={{ color: '#ca8a04' }} /></div>
+                  <div>
+                    <div className="ocr-toggle-name">🌐 Google Cloud Vision API <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(1,000 free/month)</span></div>
+                    <div className="ocr-toggle-desc">High accuracy cloud OCR. Only active when API key is configured above.</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={ocrVisionEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrVisionEnabled ? 'ON' : 'OFF'}</span>
+                  <label className="ocr-switch">
+                    <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => setOcrVisionEnabled(e.target.checked)} />
+                    <span className="ocr-slider" />
+                  </label>
+                </div>
+              </div>
+
+              {/* Tesseract */}
+              <div className="ocr-toggle-row">
+                <div className="ocr-toggle-left">
+                  <div className="ocr-toggle-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
+                  <div>
+                    <div className="ocr-toggle-name">📄 Tesseract OCR <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(offline JS fallback)</span></div>
+                    <div className="ocr-toggle-desc">Last-resort fallback. Even when OFF, it still runs as a safety net to prevent empty scans.</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={ocrTesseractEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrTesseractEnabled ? 'ON' : 'OFF'}</span>
+                  <label className="ocr-switch">
+                    <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => setOcrTesseractEnabled(e.target.checked)} />
+                    <span className="ocr-slider" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
             <button
               type="button"
               className="btn btn-primary"
               onClick={() => handleApplyScannerFolder(scannerFolder, selectedScanner, scannerApiUrl, scannerApiUsername, scannerApiPassword)}
               style={{ width: '100%', height: '38px', justifyContent: 'center', marginTop: '10px' }}
             >
-              <i className="ti ti-device-floppy" /> Save Scanner Settings
+              <i className="ti ti-device-floppy" /> Save Scanner & OCR Settings
             </button>
             {scannerFolderStatus && (
               <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '600', marginTop: '5px', textAlign: 'center' }}>
@@ -714,27 +821,27 @@ export default function SettingsOverlay({
             Export all guest records, history, logs, and settings to a secure, encrypted backup file, or restore the database from a previously exported backup file.
           </p>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <button 
-              type="button" 
-              className="btn btn-primary" 
+            <button
+              type="button"
+              className="btn btn-primary"
               onClick={handleExportBackup}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', height: '36px' }}
             >
               <i className="ti ti-download" /> Export Backup (Encrypted BAK)
             </button>
             <div style={{ position: 'relative', display: 'inline-block' }}>
-              <button 
-                type="button" 
-                className="btn btn-warn" 
+              <button
+                type="button"
+                className="btn btn-warn"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', height: '36px' }}
                 onClick={() => document.getElementById('backup-file-input').click()}
               >
                 <i className="ti ti-upload" /> Import &amp; Restore Backup
               </button>
-              <input 
+              <input
                 id="backup-file-input"
-                type="file" 
-                accept=".bak" 
+                type="file"
+                accept=".bak"
                 onChange={(e) => {
                   const file = e.target.files[0];
                   if (!file) return;
@@ -749,7 +856,7 @@ export default function SettingsOverlay({
               />
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-              <i className="ti ti-info-circle" style={{ color: 'var(--primary)' }} /> 
+              <i className="ti ti-info-circle" style={{ color: 'var(--primary)' }} />
               <span>Automatic backups are created daily and stored securely inside the server backups directory (keeping the last 10 versions).</span>
             </div>
           </div>
@@ -784,8 +891,8 @@ export default function SettingsOverlay({
                   <i className="ti ti-help-circle" style={{ color: 'var(--primary)', fontSize: '18px' }} />
                   Scanner Hardware Integration Guide
                 </h3>
-                <button 
-                  onClick={() => setShowScannerGuide(false)} 
+                <button
+                  onClick={() => setShowScannerGuide(false)}
                   style={{ background: 'none', border: 'none', fontSize: '18px', color: 'var(--text-muted)', cursor: 'pointer' }}
                 >
                   <i className="ti ti-x" />
@@ -951,9 +1058,9 @@ export default function SettingsOverlay({
 
               {/* Modal Footer */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
-                <button 
-                  type="button" 
-                  className="btn btn-primary" 
+                <button
+                  type="button"
+                  className="btn btn-primary"
                   onClick={() => setShowScannerGuide(false)}
                   style={{ height: '36px', padding: '0 18px' }}
                 >
@@ -963,7 +1070,7 @@ export default function SettingsOverlay({
             </div>
           </div>
         )}
-        
+
         {showDirPicker && (
           <div style={{
             position: 'fixed',
@@ -990,8 +1097,8 @@ export default function SettingsOverlay({
                   <i className="ti ti-folder-open" style={{ color: 'var(--primary)', fontSize: '18px' }} />
                   Local Directory Browser
                 </h3>
-                <button 
-                  onClick={() => setShowDirPicker(false)} 
+                <button
+                  onClick={() => setShowDirPicker(false)}
                   style={{ background: 'none', border: 'none', fontSize: '18px', color: 'var(--text-muted)', cursor: 'pointer' }}
                 >
                   <i className="ti ti-x" />
@@ -1037,7 +1144,7 @@ export default function SettingsOverlay({
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '20px', textAlign: 'center', color: 'var(--accent)', gap: '8px' }}>
                     <i className="ti ti-alert-triangle" style={{ fontSize: '24px' }} />
                     <span style={{ fontSize: '13px', fontWeight: '600' }}>{pickerError}</span>
-                    <button 
+                    <button
                       onClick={() => loadDirPickerPath(pickerParent || '')}
                       className="btn btn-secondary btn-sm"
                       style={{ marginTop: '5px' }}
@@ -1051,7 +1158,7 @@ export default function SettingsOverlay({
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     {/* Go Up Parent Directory */}
                     {pickerParent !== null && (
-                      <div 
+                      <div
                         onClick={() => loadDirPickerPath(pickerParent)}
                         style={{
                           display: 'flex',
@@ -1078,7 +1185,7 @@ export default function SettingsOverlay({
                       </div>
                     ) : (
                       pickerDirs.map((dir, idx) => (
-                        <div 
+                        <div
                           key={idx}
                           onClick={() => loadDirPickerPath(pickerPath ? (pickerPath.endsWith('\\') ? pickerPath + dir : pickerPath + '\\' + dir) : dir)}
                           style={{
@@ -1106,17 +1213,17 @@ export default function SettingsOverlay({
 
               {/* Action buttons */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary" 
+                <button
+                  type="button"
+                  className="btn btn-secondary"
                   onClick={() => setShowDirPicker(false)}
                   style={{ height: '36px' }}
                 >
                   Cancel
                 </button>
-                <button 
-                  type="button" 
-                  className="btn btn-primary" 
+                <button
+                  type="button"
+                  className="btn btn-primary"
                   onClick={handleSelectDirPicker}
                   disabled={!pickerPath}
                   style={{ height: '36px' }}
@@ -1154,7 +1261,7 @@ export default function SettingsOverlay({
                   Windows Scanner Service Warning
                 </h3>
               </div>
-              
+
               <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--text-muted)' }}>
                 <p style={{ marginBottom: '10px' }}>
                   The application detected that critical Windows services required for hardware integrations are stopped:
@@ -1172,7 +1279,7 @@ export default function SettingsOverlay({
                   )}
                 </ul>
                 <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '4px', padding: '10px 12px', color: '#991b1b', fontSize: '12px' }}>
-                  <strong>How to Fix:</strong> The app terminal must be run with <strong>Administrator privileges</strong> to start these services. 
+                  <strong>How to Fix:</strong> The app terminal must be run with <strong>Administrator privileges</strong> to start these services.
                   Alternatively, open Command Prompt (cmd) as Administrator and run:
                   <code style={{ display: 'block', background: 'rgba(0,0,0,0.05)', padding: '5px', borderRadius: '3px', marginTop: '6px', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
                     {serviceWarning.wia ? "net start stisvc\n" : ""}{serviceWarning.scard ? "net start SCardSvr" : ""}
@@ -1181,9 +1288,9 @@ export default function SettingsOverlay({
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
-                <button 
-                  type="button" 
-                  className="btn btn-primary" 
+                <button
+                  type="button"
+                  className="btn btn-primary"
                   onClick={() => setServiceWarning({ show: false, wia: false, scard: false })}
                   style={{ height: '36px', padding: '0 20px' }}
                 >
@@ -1193,7 +1300,7 @@ export default function SettingsOverlay({
             </div>
           </div>
         )}
-        
+
       </div>
     </div>
   );

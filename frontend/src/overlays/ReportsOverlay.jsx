@@ -109,124 +109,128 @@ export default function ReportsOverlay({
       </div>
       
       <div className="reports-tabs-bar">
-        <button
-          onClick={() => setReportsTab('detail')}
-          className={`reports-tab-btn ${reportsTab === 'detail' ? 'active' : ''}`}
-        >
-          Detailed Visitor Logs
-        </button>
-        <button
-          onClick={() => { setReportsTab('summary'); runSummaryReport(); }}
-          className={`reports-tab-btn ${reportsTab === 'summary' ? 'active' : ''}`}
-        >
-          Summary Reports
-        </button>
+        <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+          <button
+            onClick={() => setReportsTab('detail')}
+            className={`reports-tab-btn ${reportsTab === 'detail' ? 'active' : ''}`}
+          >
+            Detailed Visitor Logs
+          </button>
+          <button
+            onClick={() => { setReportsTab('summary'); runSummaryReport(); }}
+            className={`reports-tab-btn ${reportsTab === 'summary' ? 'active' : ''}`}
+          >
+            Summary Reports
+          </button>
+        </div>
+
+        {reportsTab === 'detail' && (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginLeft: 'auto', padding: '4px 0' }}>
+            <button className="btn btn-primary" onClick={runDetailReport} style={{ height: '32px', padding: '0 14px', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' }}>
+              <i className="ti ti-filter" style={{ marginRight: '4px' }} /> Apply Filters
+            </button>
+            <button className="btn btn-success" onClick={handleExportExcel} style={{ height: '32px', padding: '0 14px', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' }}>
+              <i className="ti ti-file-spreadsheet" style={{ marginRight: '4px' }} /> Export Excel
+            </button>
+          </div>
+        )}
+
+        {reportsTab === 'summary' && (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginLeft: 'auto', padding: '4px 0' }}>
+            <button className="btn btn-primary" onClick={runSummaryReport} style={{ height: '32px', padding: '0 14px', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' }}>
+              <i className="ti ti-check" style={{ marginRight: '4px' }} /> Generate Summary
+            </button>
+          </div>
+        )}
       </div>
       
       {reportsTab === 'detail' ? (
         <div className="reports-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {/* Filters Row */}
-          <div style={{
-            background: 'var(--bg-card, #f9f9f6)',
-            borderRadius: '6px',
-            padding: '16px',
-            border: '0.5px solid var(--border)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px'
-          }}>
-            {/* Top row: Search & Date Range */}
-            <div className="reports-top-filter-grid">
-              <div>
-                <label className="reports-filter-label" style={{ fontWeight: '700' }}>Search Guest</label>
-                <div style={{ position: 'relative' }}>
-                  <i className="ti ti-search" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input 
-                    type="text" 
-                    placeholder="Search by Name, ID, Nationality..." 
-                    value={rptIdNum} 
-                    onChange={(e) => setRptIdNum(e.target.value)} 
-                    className="reports-filter-text" 
-                    style={{ paddingLeft: '32px', height: '36px' }}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="reports-filter-label">Period</label>
-                <select value={rptPeriod} onChange={(e) => setRptPeriod(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
-                  <option value="today">Today</option>
-                  <option value="yesterday">Yesterday</option>
-                  <option value="custom">Custom Date Range</option>
-                  <option value="all">All Time</option>
-                </select>
-              </div>
-              <div>
-                <label className="reports-filter-label">From Date</label>
+          {/* Filters Bar — Single Full-Width Horizontal Row */}
+          <div className="reports-filter-bar">
+            <div style={{ flex: '2 1 200px', minWidth: '160px' }}>
+              <label className="reports-filter-label" style={{ fontWeight: '700' }}>Search Guest</label>
+              <div style={{ position: 'relative' }}>
+                <i className="ti ti-search" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
                 <input 
-                  type="date" 
-                  value={rptDateFrom} 
-                  onChange={(e) => setRptDateFrom(e.target.value)} 
-                  disabled={rptPeriod !== 'custom'}
-                  className="reports-filter-input" 
-                  style={{ 
-                    height: '36px',
-                    opacity: rptPeriod !== 'custom' ? 0.6 : 1, 
-                    cursor: rptPeriod !== 'custom' ? 'not-allowed' : 'default' 
-                  }}
-                />
-              </div>
-              <div>
-                <label className="reports-filter-label">To Date</label>
-                <input 
-                  type="date" 
-                  value={rptDateTo} 
-                  onChange={(e) => setRptDateTo(e.target.value)} 
-                  disabled={rptPeriod !== 'custom'}
-                  className="reports-filter-input" 
-                  style={{ 
-                    height: '36px',
-                    opacity: rptPeriod !== 'custom' ? 0.6 : 1, 
-                    cursor: rptPeriod !== 'custom' ? 'not-allowed' : 'default' 
-                  }}
+                  type="text" 
+                  placeholder="Search by Name, ID, Nationality..." 
+                  value={rptIdNum} 
+                  onChange={(e) => setRptIdNum(e.target.value)} 
+                  className="reports-filter-text" 
+                  style={{ paddingLeft: '32px', height: '36px' }}
                 />
               </div>
             </div>
 
-            {/* Bottom row: Document & Status Filters + Actions */}
-            <div className="reports-bottom-filter-grid">
-              <div>
-                <label className="reports-filter-label">Check-In Status</label>
-                <select value={rptCheckedIn} onChange={(e) => setRptCheckedIn(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
-                  <option value="">All Check-In Status</option>
-                  <option value="in">Checked In Only</option>
-                  <option value="out">Not Checked In</option>
-                </select>
-              </div>
-              <div>
-                <label className="reports-filter-label">Document Type</label>
-                <select value={rptDocType} onChange={(e) => setRptDocType(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
-                  <option value="">All Document Types</option>
-                  <option value="QID">Qatar ID (QID)</option>
-                  <option value="Passport">Passport</option>
-                </select>
-              </div>
-              <div>
-                <label className="reports-filter-label">Alert Flag Status</label>
-                <select value={rptStatus} onChange={(e) => setRptStatus(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
-                  <option value="">All Flags</option>
-                  <option value="ok">Ok / No Flag</option>
-                  <option value="warning">Warning Only</option>
-                  <option value="blocked">Blocked Only</option>
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-primary" onClick={runDetailReport} style={{ height: '36px', padding: '0 18px', fontWeight: '600' }}>
-                  <i className="ti ti-filter" style={{ marginRight: '4px' }} /> Apply Filters
-                </button>
-                <button className="btn btn-success" onClick={handleExportExcel} style={{ height: '36px', padding: '0 18px', fontWeight: '600' }}>
-                  <i className="ti ti-file-spreadsheet" style={{ marginRight: '4px' }} /> Export Excel
-                </button>
-              </div>
+            <div style={{ flex: '1 1 105px', minWidth: '95px' }}>
+              <label className="reports-filter-label">Period</label>
+              <select value={rptPeriod} onChange={(e) => setRptPeriod(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="custom">Custom Date Range</option>
+                <option value="all">All Time</option>
+              </select>
+            </div>
+
+            <div style={{ flex: '1 1 125px', minWidth: '110px' }}>
+              <label className="reports-filter-label">From Date</label>
+              <input 
+                type="date" 
+                value={rptDateFrom} 
+                onChange={(e) => setRptDateFrom(e.target.value)} 
+                disabled={rptPeriod !== 'custom'}
+                className="reports-filter-input" 
+                style={{ 
+                  height: '36px',
+                  opacity: rptPeriod !== 'custom' ? 0.6 : 1, 
+                  cursor: rptPeriod !== 'custom' ? 'not-allowed' : 'default' 
+                }}
+              />
+            </div>
+
+            <div style={{ flex: '1 1 125px', minWidth: '110px' }}>
+              <label className="reports-filter-label">To Date</label>
+              <input 
+                type="date" 
+                value={rptDateTo} 
+                onChange={(e) => setRptDateTo(e.target.value)} 
+                disabled={rptPeriod !== 'custom'}
+                className="reports-filter-input" 
+                style={{ 
+                  height: '36px',
+                  opacity: rptPeriod !== 'custom' ? 0.6 : 1, 
+                  cursor: rptPeriod !== 'custom' ? 'not-allowed' : 'default' 
+                }}
+              />
+            </div>
+
+            <div style={{ flex: '1.1 1 135px', minWidth: '115px' }}>
+              <label className="reports-filter-label">Check-In Status</label>
+              <select value={rptCheckedIn} onChange={(e) => setRptCheckedIn(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
+                <option value="">All Check-In Status</option>
+                <option value="in">Checked In Only</option>
+                <option value="out">Not Checked In</option>
+              </select>
+            </div>
+
+            <div style={{ flex: '1.1 1 135px', minWidth: '115px' }}>
+              <label className="reports-filter-label">Document Type</label>
+              <select value={rptDocType} onChange={(e) => setRptDocType(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
+                <option value="">All Document Types</option>
+                <option value="QID">Qatar ID (QID)</option>
+                <option value="Passport">Passport</option>
+              </select>
+            </div>
+
+            <div style={{ flex: '1 1 115px', minWidth: '100px' }}>
+              <label className="reports-filter-label">Alert Flag Status</label>
+              <select value={rptStatus} onChange={(e) => setRptStatus(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
+                <option value="">All Flags</option>
+                <option value="ok">Ok / No Flag</option>
+                <option value="warning">Warning Only</option>
+                <option value="blocked">Blocked Only</option>
+              </select>
             </div>
           </div>
 
@@ -386,15 +390,9 @@ export default function ReportsOverlay({
         </div>
       ) : (
         <div className="reports-body" style={{ gap: '20px' }}>
-          {/* Summary Filters */}
-          <div className="reports-bottom-filter-grid" style={{
-            background: 'var(--bg-card, #f9f9f6)',
-            borderRadius: '6px',
-            padding: '16px',
-            border: '0.5px solid var(--border)',
-            marginBottom: '16px'
-          }}>
-            <div>
+          {/* Summary Filters — Single Full-Width Horizontal Grid Row */}
+          <div className="reports-filter-bar" style={{ marginBottom: '16px' }}>
+            <div style={{ flex: '1 1 180px', minWidth: '130px' }}>
               <label className="reports-filter-label">Period</label>
               <select value={sumPeriod} onChange={(e) => setSumPeriod(e.target.value)} className="reports-filter-select" style={{ height: '36px' }}>
                 <option value="today">Today</option>
@@ -403,7 +401,7 @@ export default function ReportsOverlay({
                 <option value="all">All Time</option>
               </select>
             </div>
-            <div>
+            <div style={{ flex: '1 1 180px', minWidth: '140px' }}>
               <label className="reports-filter-label">From Date</label>
               <input 
                 type="date" 
@@ -418,7 +416,7 @@ export default function ReportsOverlay({
                 }}
               />
             </div>
-            <div>
+            <div style={{ flex: '1 1 180px', minWidth: '140px' }}>
               <label className="reports-filter-label">To Date</label>
               <input 
                 type="date" 
@@ -433,9 +431,6 @@ export default function ReportsOverlay({
                 }}
               />
             </div>
-            <button className="btn btn-primary" onClick={runSummaryReport} style={{ height: '36px', padding: '0 18px', fontWeight: '600' }}>
-              <i className="ti ti-check" style={{ marginRight: '4px' }} /> Generate Summary
-            </button>
           </div>
 
           {sumResults && (

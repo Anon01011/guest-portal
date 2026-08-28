@@ -38,7 +38,12 @@ router.put('/', async (req, res) => {
     scannerApiUrl, 
     scannerApiUsername, 
     scannerApiPassword,
-    visionApiKey
+    visionApiKey,
+    // OCR Engine toggles
+    ocrPaddleEnabled,
+    ocrVisionEnabled,
+    ocrScannerApiEnabled,
+    ocrTesseractEnabled
   } = req.body;
 
   try {
@@ -85,6 +90,20 @@ router.put('/', async (req, res) => {
       await saveSetting('vision_api_key', visionApiKey.trim());
     }
 
+    // OCR Engine enable/disable toggles
+    if (ocrPaddleEnabled !== undefined) {
+      await saveSetting('ocr_paddle_enabled', ocrPaddleEnabled ? '1' : '0');
+    }
+    if (ocrVisionEnabled !== undefined) {
+      await saveSetting('ocr_vision_enabled', ocrVisionEnabled ? '1' : '0');
+    }
+    if (ocrScannerApiEnabled !== undefined) {
+      await saveSetting('ocr_scanner_api_enabled', ocrScannerApiEnabled ? '1' : '0');
+    }
+    if (ocrTesseractEnabled !== undefined) {
+      await saveSetting('ocr_tesseract_enabled', ocrTesseractEnabled ? '1' : '0');
+    }
+
     invalidateSettingsCache();
 
     const [rows] = await db.query('SELECT * FROM settings');
@@ -98,6 +117,7 @@ router.put('/', async (req, res) => {
 });
 
 // Force reset operational date to today
+
 router.post('/force-reset', async (req, res) => {
   try {
     const now = new Date();
