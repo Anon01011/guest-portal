@@ -2807,48 +2807,61 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         console.log('Pass 4: Running Dedicated QID Footer OCR Crop (2x PNG + PSM 11/6)...');
         const meta = await sharp(rotatedBuffer).metadata();
         if (meta && meta.height && meta.width) {
-          const top = Math.floor(meta.height * 0.72);
-          const footerHeight = meta.height - top;
-          const footerBuffer = await sharp(rotatedBuffer)
-            .extract({ left: 0, top, width: meta.width, height: footerHeight })
-            .grayscale()
-            .normalize()
-            .sharpen({ sigma: 1.5 })
-            .resize({ width: meta.width * 2 })
-            .png()
-            .toBuffer();
+          // Try precision 78% bottom bar crop first (isolates English Name: bar below Arabic line)
+          const topsToTry = [
+            Math.floor(meta.height * 0.78),
+            Math.floor(meta.height * 0.70)
+          ];
 
-          // Try PSM 11 (sparse text) and PSM 6 (single block)
-          let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-            tessedit_pageseg_mode: '11',
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
-          });
+          for (const top of topsToTry) {
+            const footerHeight = meta.height - top;
+            const footerBuffer = await sharp(rotatedBuffer)
+              .extract({ left: 0, top, width: meta.width, height: footerHeight })
+              .grayscale()
+              .normalize()
+              .sharpen({ sigma: 1.5 })
+              .resize({ width: meta.width * 2 })
+              .png()
+              .toBuffer();
 
-          if (!footerOcrText || footerOcrText.trim().length < 4) {
-            footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-              tessedit_pageseg_mode: '6',
+            // Try PSM 11 (sparse text) and PSM 6 (single block)
+            let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+              tessedit_pageseg_mode: '11',
               tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
             });
-          }
 
-          console.log('QID Footer Raw OCR Text:', footerOcrText);
-          let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+            if (!footerOcrText || footerOcrText.trim().length < 4) {
+              footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+                tessedit_pageseg_mode: '6',
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
+              });
+            }
 
-          // Direct Name: regex match on 2x scaled footer strip text
-          if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
-            const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME)\s*:\s*([A-Za-z\s'-]+)/i);
-            if (nameMatch && nameMatch[1]) {
-              const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
-              const cleanedMatch = cleanExtractedName(rawMatch);
-              if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
-                footerName = cleanedMatch;
+            // Strip Arabic lines if any leaked into crop
+            footerOcrText = (footerOcrText || '').split('\n')
+              .filter(l => !/[\u0600-\u06FF]/.test(l))
+              .join('\n');
+
+            console.log(`QID Footer Crop (top ${top}px) OCR Text:`, footerOcrText);
+            let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+
+            // Direct Name: regex match on 2x scaled footer strip text
+            if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
+              const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME)\s*[:\s\/-]\s*([A-Za-z\s'-]+)/i);
+              if (nameMatch && nameMatch[1]) {
+                const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
+                const cleanedMatch = cleanExtractedName(rawMatch);
+                if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
+                  footerName = cleanedMatch;
+                }
               }
             }
-          }
 
-          if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
-            console.log('QID Footer Name Extracted Successfully:', footerName);
-            detectedData.name = footerName;
+            if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+              console.log('QID Footer Name Extracted Successfully:', footerName);
+              detectedData.name = footerName;
+              break;
+            }
           }
         }
       } catch (footerErr) {
