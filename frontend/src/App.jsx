@@ -142,8 +142,9 @@ export default function App() {
   const [gmGuests, setGmGuests] = useState([]);
 
   // Deleted Records Overlay state
-  const [deletedSearch, setDeletedSearch] = useState('');
   const [deletedGuests, setDeletedGuests] = useState([]);
+  const [deletedSearch, setDeletedSearch] = useState('');
+  const [bulkSelectedIds, setBulkSelectedIds] = useState([]);
 
   // Scanner configuration modal
   const [isScannerConfigOpen, setIsScannerConfigOpen] = useState(false);
@@ -1318,6 +1319,26 @@ export default function App() {
     setPinModalOpen(true);
   };
 
+  const handleBulkRestoreTrigger = (ids) => {
+    if (!ids || ids.length === 0) return;
+    setBulkSelectedIds(ids);
+    setPinModalGuestId(null);
+    setPinModalAction('bulk_restore');
+    setPinModalTitle('Bulk Restore Records');
+    setPinModalMessage(`Are you sure you want to restore ${ids.length} selected record(s) back to the active database?`);
+    setPinModalOpen(true);
+  };
+
+  const handleBulkPermanentDeleteTrigger = (ids) => {
+    if (!ids || ids.length === 0) return;
+    setBulkSelectedIds(ids);
+    setPinModalGuestId(null);
+    setPinModalAction('bulk_permanent_delete');
+    setPinModalTitle('Bulk Permanently Destroy Records');
+    setPinModalMessage(`WARNING: This will permanently delete ${ids.length} selected record(s) and all history logs. This action cannot be undone.`);
+    setPinModalOpen(true);
+  };
+
   const executePinAuthorizedAction = async () => {
     if (!pinValue) {
       setPinModalErr('PIN code is required.');
@@ -1343,6 +1364,14 @@ export default function App() {
       } else if (pinModalAction === 'permanent_delete') {
         url = `/api/guests/${pinModalGuestId}/permanent`;
         method = 'POST';
+      } else if (pinModalAction === 'bulk_restore') {
+        url = '/api/guests/bulk-restore';
+        method = 'POST';
+        payload = { ids: bulkSelectedIds, pin: pinValue };
+      } else if (pinModalAction === 'bulk_permanent_delete') {
+        url = '/api/guests/bulk-permanent';
+        method = 'POST';
+        payload = { ids: bulkSelectedIds, pin: pinValue };
       }
 
       const res = await fetchWithAuth(url, {
@@ -1360,6 +1389,10 @@ export default function App() {
           showToast('Record restored successfully', 'success');
         } else if (pinModalAction === 'permanent_delete') {
           showToast('Record permanently deleted', 'success');
+        } else if (pinModalAction === 'bulk_restore') {
+          showToast(`Successfully restored ${bulkSelectedIds.length} records`, 'success');
+        } else if (pinModalAction === 'bulk_permanent_delete') {
+          showToast(`Successfully permanently deleted ${bulkSelectedIds.length} records`, 'success');
         }
 
         handlePinCancel();
@@ -2436,6 +2469,8 @@ export default function App() {
             fetchDeletedList={fetchDeletedList}
             handleRestoreTrigger={handleRestoreTrigger}
             handlePermanentDeleteTrigger={handlePermanentDeleteTrigger}
+            handleBulkRestoreTrigger={handleBulkRestoreTrigger}
+            handleBulkPermanentDeleteTrigger={handleBulkPermanentDeleteTrigger}
           />
         )}
       </div>
@@ -2456,8 +2491,18 @@ export default function App() {
         show={pinModalOpen}
         title={pinModalTitle}
         message={pinModalMessage}
-        confirmLabel={pinModalAction === 'permanent_delete' ? 'Permanently Destroy' : pinModalAction === 'restore' ? 'Restore Record' : 'Soft Delete'}
-        confirmClass={pinModalAction === 'permanent_delete' || pinModalAction === 'soft_delete' ? 'btn-danger-bg' : 'btn-success-bg'}
+        confirmLabel={
+          pinModalAction === 'permanent_delete' || pinModalAction === 'bulk_permanent_delete'
+            ? 'Permanently Destroy'
+            : pinModalAction === 'restore' || pinModalAction === 'bulk_restore'
+            ? 'Restore Record(s)'
+            : 'Soft Delete'
+        }
+        confirmClass={
+          pinModalAction === 'permanent_delete' || pinModalAction === 'bulk_permanent_delete' || pinModalAction === 'soft_delete'
+            ? 'btn-danger-bg'
+            : 'btn-success-bg'
+        }
         pinValue={pinValue}
         setPinValue={setPinValue}
         errorMsg={pinModalErr}

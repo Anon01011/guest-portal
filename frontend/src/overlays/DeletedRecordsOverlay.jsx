@@ -10,13 +10,17 @@ export default function DeletedRecordsOverlay({
   deletedGuests,
   fetchDeletedList,
   handleRestoreTrigger,
-  handlePermanentDeleteTrigger
+  handlePermanentDeleteTrigger,
+  handleBulkRestoreTrigger,
+  handleBulkPermanentDeleteTrigger
 }) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState([]);
 
-  // Reset page when list changes
+  // Reset page & selection when list changes
   useEffect(() => {
     setCurrentPage(1);
+    setSelectedIds([]);
   }, [deletedGuests.length]);
 
   if (activeOverlay !== 'deleted-records') return null;
@@ -27,6 +31,39 @@ export default function DeletedRecordsOverlay({
   const pageGuests = deletedGuests.slice(startIdx, startIdx + PAGE_SIZE);
 
   const goTo = (p) => setCurrentPage(Math.max(1, Math.min(p, totalPages)));
+
+  // Checkbox helpers
+  const isSelected = (id) => selectedIds.includes(id);
+
+  const toggleSelectOne = (id) => {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const isAllPageSelected = pageGuests.length > 0 && pageGuests.every(g => selectedIds.includes(g.id));
+
+  const toggleSelectPage = () => {
+    if (isAllPageSelected) {
+      const pageIdSet = new Set(pageGuests.map(g => g.id));
+      setSelectedIds(prev => prev.filter(id => !pageIdSet.has(id)));
+    } else {
+      const pageIds = pageGuests.map(g => g.id);
+      setSelectedIds(prev => Array.from(new Set([...prev, ...pageIds])));
+    }
+  };
+
+  const isAllTotalSelected = deletedGuests.length > 0 && selectedIds.length === deletedGuests.length;
+
+  const toggleSelectAllTotal = () => {
+    if (isAllTotalSelected) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(deletedGuests.map(g => g.id));
+    }
+  };
+
+  const clearSelection = () => setSelectedIds([]);
 
   const buildPages = () => {
     if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -80,8 +117,8 @@ export default function DeletedRecordsOverlay({
         </div>
 
         {/* Search Controls */}
-        <div className="deleted-search-row">
-          <div style={{ flex: 1 }}>
+        <div className="deleted-search-row" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: '240px' }}>
             <label className="reports-filter-label">Search Deleted Name or ID Number</label>
             <div className="gm-filter-input-wrap">
               <i className="ti ti-search gm-filter-input-icon" />
@@ -98,7 +135,69 @@ export default function DeletedRecordsOverlay({
           <button className="btn btn-sm btn-primary" onClick={fetchDeletedList} style={{ height: '34px', padding: '0 16px', background: 'linear-gradient(135deg, #a32d2d 0%, #701a1a 100%)', color: '#fff', borderColor: 'transparent', display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: '600' }}>
             <i className="ti ti-search" /> Query Archive
           </button>
+
+          {deletedGuests.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={toggleSelectAllTotal}
+              style={{ height: '34px', padding: '0 14px', background: isAllTotalSelected ? '#e2e8f0' : '#f8fafc', border: '1px solid #cbd5e1', color: '#334155', display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: '600', cursor: 'pointer' }}
+            >
+              <i className={isAllTotalSelected ? "ti ti-checkbox" : "ti ti-square"} />
+              {isAllTotalSelected ? 'Deselect All' : `Select All (${deletedGuests.length})`}
+            </button>
+          )}
         </div>
+
+        {/* Bulk Action Toolbar */}
+        {selectedIds.length > 0 && (
+          <div style={{
+            background: 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)',
+            border: '1px solid #fca5a5',
+            borderRadius: '6px',
+            padding: '10px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '10px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#991b1b', fontWeight: 600, fontSize: '13px' }}>
+              <i className="ti ti-checks" style={{ fontSize: '18px', color: '#dc2626' }} />
+              <span>{selectedIds.length} record{selectedIds.length > 1 ? 's' : ''} selected for bulk action</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => handleBulkRestoreTrigger(selectedIds)}
+                style={{ background: '#16a34a', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                title="Restore all selected records back to active database"
+              >
+                <i className="ti ti-rotate-clockwise" /> Restore Selected ({selectedIds.length})
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => handleBulkPermanentDeleteTrigger(selectedIds)}
+                style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                title="Permanently destroy all selected records — cannot be undone"
+              >
+                <i className="ti ti-trash" /> Permanently Destroy ({selectedIds.length})
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={clearSelection}
+                style={{ background: '#fff', color: '#64748b', border: '1px solid #cbd5e1', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Database Table */}
         <div style={{ border: '.5px solid var(--border)', borderRadius: '5px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
@@ -106,6 +205,15 @@ export default function DeletedRecordsOverlay({
             <table className="gm-table">
               <thead>
                 <tr>
+                  <th style={{ width: '38px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={isAllPageSelected}
+                      onChange={toggleSelectPage}
+                      title="Select/Deselect all records on this page"
+                      style={{ cursor: 'pointer', width: '15px', height: '15px' }}
+                    />
+                  </th>
                   <th style={{ width: '40px', textAlign: 'center' }}>#</th>
                   <th>Name</th>
                   <th style={{ width: '80px' }}>Doc</th>
@@ -120,7 +228,7 @@ export default function DeletedRecordsOverlay({
               <tbody>
                 {deletedGuests.length === 0 ? (
                   <tr>
-                    <td colSpan="9" style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
+                    <td colSpan="10" style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
                       <i className="ti ti-trash-off" style={{ fontSize: '28px', display: 'block', marginBottom: '5px' }} />
                       No deleted records matching current search terms.
                     </td>
@@ -128,8 +236,17 @@ export default function DeletedRecordsOverlay({
                 ) : (
                   pageGuests.map((g, idx) => {
                     const absIdx = startIdx + idx + 1;
+                    const checked = isSelected(g.id);
                     return (
-                      <tr key={g.id} style={{ background: idx % 2 === 0 ? '#fdfbfb' : '#fff' }}>
+                      <tr key={g.id} style={{ background: checked ? '#fef2f2' : idx % 2 === 0 ? '#fdfbfb' : '#fff' }}>
+                        <td style={{ textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelectOne(g.id)}
+                            style={{ cursor: 'pointer', width: '15px', height: '15px' }}
+                          />
+                        </td>
                         <td style={{ textAlign: 'center', color: '#777' }}>{absIdx}</td>
                         <td style={{ fontWeight: 600, color: '#a32d2d' }}>
                           {g.name}

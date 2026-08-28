@@ -606,6 +606,88 @@ router.post('/:id/delete', async (req, res) => {
   }
 });
 
+// Bulk Restore guests (soft-delete recovery, PIN protected)
+router.post('/bulk-restore', async (req, res) => {
+  const { ids, pin } = req.body;
+  const byUser = req.user;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'At least one guest ID must be selected' });
+  }
+  if (!ids.every(id => isValidId(id))) {
+    return res.status(400).json({ error: 'Invalid guest ID format in array' });
+  }
+  if (!pin || typeof pin !== 'string') {
+    return res.status(400).json({ error: 'Deletion PIN is required to restore guest records' });
+  }
+
+  try {
+    const [settings] = await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['delete_pin']);
+    if (settings.length === 0) {
+      return res.status(500).json({ error: 'Delete PIN setting is not configured.' });
+    }
+
+    const match = await bcrypt.compare(pin, settings[0].setting_value);
+    if (!match) {
+      return res.status(403).json({ error: 'Incorrect Deletion PIN' });
+    }
+
+    const nowStr = new Date().toLocaleString('en-GB');
+    const placeholders = ids.map(() => '?').join(',');
+
+    await db.query(
+      `UPDATE guests SET deleted = 0, delete_reason = NULL, deleted_at = NULL WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    for (const guestId of ids) {
+      await db.query(
+        `INSERT INTO status_history (guest_id, type, reason, date, by_user) VALUES (?, ?, ?, ?, ?)`,
+        [guestId, 'ok', 'Restored/Recovered guest record (bulk operation)', nowStr, byUser]
+      );
+    }
+
+    res.json({ message: `Successfully restored ${ids.length} guest records` });
+  } catch (err) {
+    console.error('Bulk restore error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Bulk Permanently delete guests (hard-delete, PIN protected)
+router.post('/bulk-permanent', async (req, res) => {
+  const { ids, pin } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'At least one guest ID must be selected' });
+  }
+  if (!ids.every(id => isValidId(id))) {
+    return res.status(400).json({ error: 'Invalid guest ID format in array' });
+  }
+  if (!pin || typeof pin !== 'string') {
+    return res.status(400).json({ error: 'Deletion PIN is required for permanent deletion.' });
+  }
+
+  try {
+    const [settings] = await db.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['delete_pin']);
+    if (settings.length === 0) {
+      return res.status(500).json({ error: 'Delete PIN setting is not configured.' });
+    }
+
+    const match = await bcrypt.compare(pin, settings[0].setting_value);
+    if (!match) {
+      return res.status(403).json({ error: 'Incorrect Deletion PIN' });
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    await db.query(`DELETE FROM guests WHERE id IN (${placeholders})`, ids);
+    res.json({ message: `Successfully permanently deleted ${ids.length} guest records.` });
+  } catch (err) {
+    console.error('Bulk permanent delete error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Restore guest (soft-delete recovery, PIN protected)
 router.post('/:id/restore', async (req, res) => {
   const { id } = req.params;
