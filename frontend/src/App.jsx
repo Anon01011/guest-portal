@@ -17,6 +17,7 @@ import SettingsOverlay from './overlays/SettingsOverlay';
 import ReportsOverlay from './overlays/ReportsOverlay';
 import GuestManagementOverlay from './overlays/GuestManagementOverlay';
 import DeletedRecordsOverlay from './overlays/DeletedRecordsOverlay';
+import { RiRobotLine, RiShieldLockLine, RiGlobeLine, RiFileTextLine } from 'react-icons/ri';
 
 export default function App() {
   // ─── License State (BYPASS ACTIVE) ─────────────────────────────
@@ -1086,9 +1087,9 @@ export default function App() {
 
     // Status warning feedback
     if (g.statusInfo && g.statusInfo.current === 'blocked') {
-      showToast(`⚠️ This guest is BLOCKED - ${g.statusInfo.blockedReason || 'no reason given'}`, 'warn');
+      showToast(`This guest is BLOCKED - ${g.statusInfo.blockedReason || 'no reason given'}`, 'warn');
     } else if (g.statusInfo && g.statusInfo.current === 'warning') {
-      showToast(`⚠️ This guest has a WARNING on file - ${g.statusInfo.warningReason || 'no reason given'}`, 'warn');
+      showToast(`This guest has a WARNING on file - ${g.statusInfo.warningReason || 'no reason given'}`, 'warn');
     } else {
       showToast('Guest record loaded', 'success');
     }
@@ -2760,7 +2761,7 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#eff6ff' }}><i className="ti ti-cpu" style={{ color: '#2563eb' }} /></div>
                       <div>
-                        <div className="modal-ocr-name">🤖 PaddleOCR <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Local ONNX - Recommended)</span></div>
+                        <div className="modal-ocr-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#2563eb'}} /> PaddleOCR <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Local ONNX - Recommended)</span></div>
                         <div className="modal-ocr-desc">Runs locally on PC — highest accuracy &amp; sub-second speed.</div>
                       </div>
                     </div>
@@ -2775,7 +2776,7 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
                       <div>
-                        <div className="modal-ocr-name">🔐 Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
+                        <div className="modal-ocr-name"><RiShieldLockLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
                         <div className="modal-ocr-desc">Uses hardware scanner Web API URL.</div>
                       </div>
                     </div>
@@ -2790,7 +2791,7 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#fefce8' }}><i className="ti ti-brand-google" style={{ color: '#ca8a04' }} /></div>
                       <div>
-                        <div className="modal-ocr-name">🌐 Google Cloud Vision API <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Cloud OCR)</span></div>
+                        <div className="modal-ocr-name"><RiGlobeLine style={{verticalAlign:'middle',marginRight:'5px',color:'#ca8a04'}} /> Google Cloud Vision API <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Cloud OCR)</span></div>
                         <div className="modal-ocr-desc">Requires Vision API key set in main Settings overlay.</div>
                       </div>
                     </div>
@@ -2805,7 +2806,7 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
                       <div>
-                        <div className="modal-ocr-name">📄 Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Safety Fallback)</span></div>
+                        <div className="modal-ocr-name"><RiFileTextLine style={{verticalAlign:'middle',marginRight:'5px',color:'#7c3aed'}} /> Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Safety Fallback)</span></div>
                         <div className="modal-ocr-desc">Always keeps a safety fallback so scans never fail.</div>
                       </div>
                     </div>
