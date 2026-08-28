@@ -1298,6 +1298,9 @@ const isGarbageOcrName = (candidate) => {
   // Filename patterns (e.g. IMG_1234, SCAN_001, DSC_999, DOCUMENT_1)
   if (/^(?:IMG|SCAN|DSC|PHOTO|IMAGE|DOC|DOCUMENT)[_\s\-]?\d+/i.test(clean)) return true;
 
+  // Reject standalone repeated consonant 2-letter words like GG, DD, ZZ, XX, QQ, WW, JJ, KK, CC, VV, FF, BB, PP, TT
+  if (/\b(GG|DD|ZZ|XX|QQ|WW|JJ|KK|CC|VV|FF|BB|PP|TT)\b/i.test(clean)) return true;
+
   // Filter known top-header card title OCR garble combinations (e.g. "TATE VR AAR FO JAD D", "BUUREN FHT")
   if (/(?:TATE|STATE|PERMIT|RESIDENCY|BUUREN|FHT|WERNER|ELD|OUD|JB|JY|AA|JF|OUL|JD|GY|AAD|XX|ZZ|QQ|WW|II|UU)\b/i.test(clean)) return true;
 
@@ -1312,9 +1315,25 @@ const isGarbageOcrName = (candidate) => {
   const longWords = words.filter(w => w.length >= 3 && !QID_HEADER_WORDS.has(w));
   if (longWords.length === 0) return true;
 
-  // Check for random consonant garble (words of 3+ chars with 0 vowels like FHT, BXZ, QWT)
-  const consonantGarble = words.filter(w => w.length >= 3 && !/[AEIOUY]/i.test(w));
-  if (consonantGarble.length >= Math.ceil(words.length / 2)) return true;
+  // ANY word of 3+ chars with 0 vowels (like DGD, FHT, BXZ, QWT, LKL, CLL, PST, GHD, RST) is OCR garble!
+  const zeroVowelWords = words.filter(w => w.length >= 3 && !/[AEIOUY]/i.test(w));
+  if (zeroVowelWords.length > 0) return true;
+
+  // Overall vowel check: Real human names must have at least ~22% vowels (A, E, I, O, U, Y) across all letters
+  const allLetters = clean.replace(/[^A-Z]/g, '');
+  if (allLetters.length >= 4) {
+    const vowelCount = (allLetters.match(/[AEIOUY]/g) || []).length;
+    const vowelRatio = vowelCount / allLetters.length;
+    if (vowelRatio < 0.22) return true; // e.g. "RAD GG DGD" has 1 vowel / 8 letters = 12.5% -> REJECTED!
+  }
+
+  // If candidate consists of only short 2-letter/3-letter words and none of them is 4+ letters
+  const hasSubstantialWord = words.some(w => w.length >= 4 && !QID_HEADER_WORDS.has(w));
+  const VALID_SHORT_NAME_PATTERNS = new Set(['AL', 'EL', 'BIN', 'BEN', 'ABU', 'MD', 'DR', 'MR', 'MS', 'MA', 'BA', 'HA', 'LE', 'DE', 'SAN']);
+  if (!hasSubstantialWord) {
+    const invalidShortWords = words.filter(w => w.length <= 3 && !VALID_SHORT_NAME_PATTERNS.has(w) && !/^(?:ALI|ROY|DEO|DAS|SAI|RAO|DAN|KIM|LEE|PARK|HAN|CHO|LIN|TAN|LIM|WONG|CHEN|LAM|ENG|NG)$/i.test(w));
+    if (invalidShortWords.length >= Math.ceil(words.length / 2)) return true;
+  }
 
   // If most words are 1-2 letters (e.g. "TATE VR AAR FO JAD D", "JF OUL JD GY AAD" or "OUD JB JY AA"), it's OCR garbage
   const shortWords = words.filter(w => w.length <= 2 && w !== 'AL' && w !== 'EL');
