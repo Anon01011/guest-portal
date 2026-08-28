@@ -17,7 +17,7 @@ import SettingsOverlay from './overlays/SettingsOverlay';
 import ReportsOverlay from './overlays/ReportsOverlay';
 import GuestManagementOverlay from './overlays/GuestManagementOverlay';
 import DeletedRecordsOverlay from './overlays/DeletedRecordsOverlay';
-import { RiRobotLine, RiShieldLockLine, RiGlobeLine, RiFileTextLine } from 'react-icons/ri';
+import { RiRobotLine, RiShieldCheckLine, RiGlobeLine, RiFileTextLine } from 'react-icons/ri';
 
 export default function App() {
   // ─── License State (BYPASS ACTIVE) ─────────────────────────────
@@ -2776,7 +2776,7 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiShieldLockLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
+                        <div className="modal-ocr-name"><RiShieldCheckLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
                         <div className="modal-ocr-desc">Uses hardware scanner Web API URL.</div>
                       </div>
                     </div>

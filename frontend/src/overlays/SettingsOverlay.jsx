@@ -1,5 +1,5 @@
 import React from 'react';
-import { RiRobotLine, RiShieldLockLine, RiGlobeLine, RiFileTextLine } from 'react-icons/ri';
+import { RiRobotLine, RiShieldCheckLine, RiGlobeLine, RiFileTextLine } from 'react-icons/ri';
 
 export default function SettingsOverlay({
   activeOverlay,
@@ -747,7 +747,7 @@ export default function SettingsOverlay({
                 <div className="ocr-toggle-left">
                   <div className="ocr-toggle-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
                   <div>
-                    <div className="ocr-toggle-name"><RiShieldLockLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Regula / Thales)</span></div>
+                    <div className="ocr-toggle-name"><RiShieldCheckLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Regula / Thales)</span></div>
                     <div className="ocr-toggle-desc">Uses the Scanner API URL above. Only active when URL is configured.</div>
                   </div>
                 </div>
