@@ -2802,66 +2802,107 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       }
     }
 
-    // ── PASS 4: Dedicated QID Footer Bar Crop (2x PNG Scaling + PSM 11/6) ──────
+    // ── PASS 4: Dedicated QID Footer Bar Crop (Red Channel De-Blueing + 2x PNG + PSM 11/6) ──────
     // Directly targets the bottom blue footer bar containing "Name: <FULL NAME>"
+    // Blue background is eliminated by Red Channel Extraction (turns blue bar white, bold text black)
     if (detectedData.docType === 'QID' || docType === 'QID' || PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name)) {
       try {
-        console.log('Pass 4: Running Dedicated QID Footer OCR Crop (2x PNG + PSM 11/6)...');
+        console.log('Pass 4: Running Dedicated QID Blue Footer OCR Crop (Red Channel De-Blueing + PSM 11/6)...');
         const meta = await sharp(rotatedBuffer).metadata();
         if (meta && meta.height && meta.width) {
-          // Try precision 78% bottom bar crop first (isolates English Name: bar below Arabic line)
           const topsToTry = [
-            Math.floor(meta.height * 0.78),
+            Math.floor(meta.height * 0.77),
             Math.floor(meta.height * 0.70)
           ];
 
           for (const top of topsToTry) {
             const footerHeight = meta.height - top;
-            const footerBuffer = await sharp(rotatedBuffer)
-              .extract({ left: 0, top, width: meta.width, height: footerHeight })
-              .grayscale()
-              .normalize()
-              .sharpen({ sigma: 1.5 })
-              .resize({ width: meta.width * 2 })
-              .png()
-              .toBuffer();
+            const croppedRaw = sharp(rotatedBuffer).extract({ left: 0, top, width: meta.width, height: footerHeight });
 
-            // Try PSM 11 (sparse text) and PSM 6 (single block)
-            let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-              tessedit_pageseg_mode: '11',
-              tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
-            });
+            // Create 3 binarization variants to handle all light/dark blue backgrounds and bold font weights:
+            // 1) Red channel extraction (eliminates blue background color completely)
+            // 2) Linear high-contrast boost (sharpens bold black text on light blue)
+            // 3) Standard grayscale normalize fallback
+            const bufferVariants = [];
 
-            if (!footerOcrText || footerOcrText.trim().length < 4) {
-              footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-                tessedit_pageseg_mode: '6',
+            try {
+              // Variant A: Red Channel De-Blueing (Red channel = 0). Blue reflects high red/green under flash -> turns pure white!
+              const redChannelBuf = await croppedRaw.clone()
+                .extractChannel(0) // 0 = Red channel
+                .normalize()
+                .threshold(150)
+                .resize({ width: meta.width * 2 })
+                .png()
+                .toBuffer();
+              bufferVariants.push(redChannelBuf);
+            } catch (_) {}
+
+            try {
+              // Variant B: High Contrast Linear Boost
+              const linearBuf = await croppedRaw.clone()
+                .grayscale()
+                .linear(2.2, -90)
+                .sharpen({ sigma: 2 })
+                .resize({ width: meta.width * 2 })
+                .png()
+                .toBuffer();
+              bufferVariants.push(linearBuf);
+            } catch (_) {}
+
+            try {
+              // Variant C: Standard Grayscale Normalize
+              const standardBuf = await croppedRaw.clone()
+                .grayscale()
+                .normalize()
+                .sharpen({ sigma: 1.5 })
+                .resize({ width: meta.width * 2 })
+                .png()
+                .toBuffer();
+              bufferVariants.push(standardBuf);
+            } catch (_) {}
+
+            for (const footerBuffer of bufferVariants) {
+              // Try PSM 11 (sparse text) and PSM 6 (single block)
+              let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+                tessedit_pageseg_mode: '11',
                 tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
               });
-            }
 
-            // Strip Arabic lines if any leaked into crop
-            footerOcrText = (footerOcrText || '').split('\n')
-              .filter(l => !/[\u0600-\u06FF]/.test(l))
-              .join('\n');
+              if (!footerOcrText || footerOcrText.trim().length < 4) {
+                footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
+                  tessedit_pageseg_mode: '6',
+                  tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
+                });
+              }
 
-            console.log(`QID Footer Crop (top ${top}px) OCR Text:`, footerOcrText);
-            let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+              // Strip Arabic lines if any leaked into crop
+              footerOcrText = (footerOcrText || '').split('\n')
+                .filter(l => !/[\u0600-\u06FF]/.test(l))
+                .join('\n');
 
-            // Direct Name: regex match on 2x scaled footer strip text
-            if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
-              const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME)\s*[:\s\/-]\s*([A-Za-z\s'-]+)/i);
-              if (nameMatch && nameMatch[1]) {
-                const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
-                const cleanedMatch = cleanExtractedName(rawMatch);
-                if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
-                  footerName = cleanedMatch;
+              console.log(`QID Footer Crop (top ${top}px) OCR Text:`, footerOcrText);
+              let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
+
+              // Direct Name: regex match on 2x scaled footer strip text
+              if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
+                const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME|NARNE|NARN|NAIN|WAME|NME)\s*[:\s\/-]?\s*([A-Za-z\s'-]+)/i);
+                if (nameMatch && nameMatch[1]) {
+                  const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
+                  const cleanedMatch = cleanExtractedName(rawMatch);
+                  if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
+                    footerName = cleanedMatch;
+                  }
                 }
+              }
+
+              if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+                console.log('QID Footer Name Extracted Successfully:', footerName);
+                detectedData.name = footerName;
+                break;
               }
             }
 
-            if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
-              console.log('QID Footer Name Extracted Successfully:', footerName);
-              detectedData.name = footerName;
+            if (detectedData.name && !PLACEHOLDER_NAMES.has(detectedData.name) && !isGarbageOcrName(detectedData.name)) {
               break;
             }
           }
