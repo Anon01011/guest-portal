@@ -1232,7 +1232,8 @@ const extractQidNumberFromText = (ocrText) => {
     if (!idLabelPattern.test(lines[i])) continue;
     for (let j = 0; j < 3 && i + j < lines.length; j++) {
       const line = lines[i + j];
-      const localPattern = /([23][0-9OoIliT|!\s\-]{9,18})/g;
+      // Allow spaces, dots, dashes, and common OCR noise symbols inserted by watermarks across the 11-digit number
+      const localPattern = /([23][0-9OoIliT|!\s\-\._\/]{9,22})/g;
       let match;
       while ((match = localPattern.exec(line)) !== null) {
         pushQidCandidate(candidates, match[1], true, i + j);
@@ -1241,11 +1242,12 @@ const extractQidNumberFromText = (ocrText) => {
   }
 
   let match;
-  const spacedPattern = /\b([23])\s*([0-9OoIliT|!]{3})\s*([0-9OoIliT|!]{3})\s*([0-9OoIliT|!]{4})\b/g;
+  // Handle watermark-broken 11-digit patterns across spaces/dots
+  const spacedPattern = /\b([23])\s*[\._\-]?\s*([0-9OoIliT|!]{2,3})\s*[\._\-]?\s*([0-9OoIliT|!]{3,4})\s*[\._\-]?\s*([0-9OoIliT|!]{3,4})\b/g;
   while ((match = spacedPattern.exec(nonMrz)) !== null) {
     pushQidCandidate(candidates, match.slice(1).join(''), false);
   }
-  const globalPattern = /\b([23][0-9OoIliT|!]{10})\b/g;
+  const globalPattern = /\b([23][0-9OoIliT|!\s\-\.]{10,14})\b/g;
   while ((match = globalPattern.exec(nonMrz)) !== null) {
     pushQidCandidate(candidates, match[1], false);
   }
@@ -1261,9 +1263,9 @@ const normalizeLatinName = (str) => String(str || '').toUpperCase()
 const cleanExtractedName = (str) => {
   let n = normalizeLatinName(str);
   n = n.replace(/^(?:FULL\s*)?NAME\s+/i, '').replace(/^AME\s+/i, '')
-    .replace(/^NARNE\s+/i, '').replace(/^NAINE\s+/i, '').replace(/^NARN\s+/i, '')
+    .replace(/^NNAME\s+/i, '').replace(/^NARNE\s+/i, '').replace(/^NAINE\s+/i, '').replace(/^NARN\s+/i, '')
     .replace(/^NAIN\s+/i, '').replace(/^NME\s+/i, '').replace(/^NAM\s+/i, '').trim();
-  n = n.replace(/\s+(?:NAME|NAM|AME|NARNE|NAINE|NARN|NAIN|NME)\s*$/i, '').trim();
+  n = n.replace(/\s+(?:NAME|NAM|AME|NNAME|NARNE|NAINE|NARN|NAIN|NME)\s*$/i, '').trim();
   // Only drop trailing single-letter noise when it is truly isolated (not a valid 2-letter suffix like AL, BIN, MD)
   const KEEP_SUFFIXES = new Set(['AL', 'EL', 'BIN', 'ABU', 'MD', 'DR', 'MR', 'MS']);
   const parts = n.split(/\s+/);
@@ -2768,17 +2770,18 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
     let ocrText = await runOcrOnBuffer(pass1Buffer, 'eng');
     let detectedData = parseDocumentDetails(fileName, docType, ocrText);
 
-    // ── PASS 2: Contrast boost only if Pass 1 failed ─────────────────────────────
+    // ── PASS 2: De-Watermarking + Contrast Boost (Removes UV/Holographic Watermarks) ──────
     // Reuses rotatedBuffer (no second rotate) — saves ~3-5s.
     if (isResultLowQuality(detectedData)) {
-      console.log('Pass 2: Contrast boost OCR...');
+      console.log('Pass 2: Running De-Watermarking + Contrast Boost OCR...');
       let pass2Buffer;
       try {
+        // Extract Red channel (0) to erase UV green/pink/cyan watermarks and linear boost contrast
         pass2Buffer = await sharp(rotatedBuffer)
-          .grayscale()
+          .extractChannel(0)
           .normalize()
-          .linear(1.5, -30)
-          .sharpen({ sigma: 1.5, m1: 1.5, m2: 3 })
+          .linear(2.5, -110)
+          .sharpen({ sigma: 2 })
           .toBuffer();
       } catch (err) {
         pass2Buffer = pass1Buffer;
@@ -2786,9 +2789,10 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       const ocrTextPass2 = await runOcrOnBuffer(pass2Buffer, 'eng');
       const detectedDataPass2 = parseDocumentDetails(fileName, docType, ocrTextPass2);
       if (!isResultLowQuality(detectedDataPass2) ||
-        (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType))) {
+        (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType)) ||
+        (detectedDataPass2.name && !PLACEHOLDER_NAMES.has(detectedDataPass2.name) && !isGarbageOcrName(detectedDataPass2.name) && isGarbageOcrName(detectedData.name))) {
         detectedData = detectedDataPass2;
-        ocrText = ocrTextPass2; // keep best text for pass 3 reuse
+        ocrText = ocrTextPass2;
       }
     }
 
