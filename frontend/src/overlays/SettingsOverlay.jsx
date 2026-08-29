@@ -60,6 +60,8 @@ export default function SettingsOverlay({
   setOcrScannerApiEnabled,
   ocrTesseractEnabled,
   setOcrTesseractEnabled,
+  ocrRapidEnabled,
+  setOcrRapidEnabled,
   handleToggleOcrEngine,
   licenseStatus
 }) {
@@ -792,6 +794,24 @@ export default function SettingsOverlay({
                   <span className={ocrTesseractEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrTesseractEnabled ? 'ON' : 'OFF'}</span>
                   <label className="ocr-switch">
                     <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrTesseractEnabled', e.target.checked) : setOcrTesseractEnabled(e.target.checked)} />
+                    <span className="ocr-slider" />
+                  </label>
+                </div>
+              </div>
+
+              {/* Independent Rapid OCR Engine */}
+              <div className="ocr-toggle-row">
+                <div className="ocr-toggle-left">
+                  <div className="ocr-toggle-icon" style={{ background: '#fdf4ff' }}><i className="ti ti-bolt" style={{ color: '#c026d3' }} /></div>
+                  <div>
+                    <div className="ocr-toggle-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#c026d3'}} /> High-Accuracy Neural Engine <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Independent RapidOCR)</span></div>
+                    <div className="ocr-toggle-desc">Ultra-accurate standalone neural recognition engine for ID/Passport cards.</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={ocrRapidEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrRapidEnabled ? 'ON' : 'OFF'}</span>
+                  <label className="ocr-switch">
+                    <input type="checkbox" checked={!!ocrRapidEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrRapidEnabled', e.target.checked) : setOcrRapidEnabled(e.target.checked)} />
                     <span className="ocr-slider" />
                   </label>
                 </div>

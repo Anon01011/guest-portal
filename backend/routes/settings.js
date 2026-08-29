@@ -43,7 +43,8 @@ router.put('/', async (req, res) => {
     ocrPaddleEnabled,
     ocrVisionEnabled,
     ocrScannerApiEnabled,
-    ocrTesseractEnabled
+    ocrTesseractEnabled,
+    ocrRapidEnabled
   } = req.body;
 
   try {
@@ -102,6 +103,9 @@ router.put('/', async (req, res) => {
     }
     if (ocrTesseractEnabled !== undefined) {
       await saveSetting('ocr_tesseract_enabled', ocrTesseractEnabled ? '1' : '0');
+    }
+    if (ocrRapidEnabled !== undefined) {
+      await saveSetting('ocr_rapid_enabled', ocrRapidEnabled ? '1' : '0');
     }
 
     invalidateSettingsCache();

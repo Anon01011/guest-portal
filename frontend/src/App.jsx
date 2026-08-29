@@ -86,6 +86,7 @@ export default function App() {
   const [ocrVisionEnabled, setOcrVisionEnabled] = useState(true);
   const [ocrScannerApiEnabled, setOcrScannerApiEnabled] = useState(true);
   const [ocrTesseractEnabled, setOcrTesseractEnabled] = useState(true);
+  const [ocrRapidEnabled, setOcrRapidEnabled] = useState(true);
 
   // Main App State
   const [dashboardDate, setDashboardDate] = useState('');
@@ -325,6 +326,7 @@ export default function App() {
         setOcrVisionEnabled(data.ocr_vision_enabled !== '0');
         setOcrScannerApiEnabled(data.ocr_scanner_api_enabled !== '0');
         setOcrTesseractEnabled(data.ocr_tesseract_enabled !== '0');
+        setOcrRapidEnabled(data.ocr_rapid_enabled !== '0');
 
         // Default dashboard date to operational date if not set yet
         setDashboardDate(prev => prev || data.operational_date);
@@ -359,7 +361,8 @@ export default function App() {
           ocrPaddleEnabled,
           ocrVisionEnabled,
           ocrScannerApiEnabled,
-          ocrTesseractEnabled
+          ocrTesseractEnabled,
+          ocrRapidEnabled
         })
       });
       if (res.ok) {
@@ -378,6 +381,7 @@ export default function App() {
     if (key === 'ocrVisionEnabled') setOcrVisionEnabled(val);
     if (key === 'ocrScannerApiEnabled') setOcrScannerApiEnabled(val);
     if (key === 'ocrTesseractEnabled') setOcrTesseractEnabled(val);
+    if (key === 'ocrRapidEnabled') setOcrRapidEnabled(val);
     try {
       await fetchWithAuth('/api/settings', {
         method: 'PUT',
@@ -2425,6 +2429,8 @@ export default function App() {
             setOcrScannerApiEnabled={setOcrScannerApiEnabled}
             ocrTesseractEnabled={ocrTesseractEnabled}
             setOcrTesseractEnabled={setOcrTesseractEnabled}
+            ocrRapidEnabled={ocrRapidEnabled}
+            setOcrRapidEnabled={setOcrRapidEnabled}
             handleToggleOcrEngine={handleToggleOcrEngine}
           />
         )}
@@ -2874,17 +2880,17 @@ export default function App() {
                     </label>
                   </div>
 
-                  {/* Tesseract */}
+                  {/* Independent Rapid OCR Engine */}
                   <div className="modal-ocr-row">
                     <div className="modal-ocr-left">
-                      <div className="modal-ocr-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
+                      <div className="modal-ocr-icon" style={{ background: '#fdf4ff' }}><i className="ti ti-bolt" style={{ color: '#c026d3' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiFileTextLine style={{verticalAlign:'middle',marginRight:'5px',color:'#7c3aed'}} /> Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Fallback)</span></div>
-                        <div className="modal-ocr-desc">When OFF, Tesseract is strictly disabled to maximize speed.</div>
+                        <div className="modal-ocr-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#c026d3'}} /> High-Accuracy Neural Engine <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Independent RapidOCR)</span></div>
+                        <div className="modal-ocr-desc">Ultra-accurate standalone neural engine for ID/Passport cards.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => handleToggleOcrEngine('ocrTesseractEnabled', e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrRapidEnabled} onChange={e => handleToggleOcrEngine('ocrRapidEnabled', e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>

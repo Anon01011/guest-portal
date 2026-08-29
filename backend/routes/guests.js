@@ -5,6 +5,7 @@ const path = require('path');
 const db = require('../db');
 const scanner = require('../utils/scanner');
 const { processDocumentOcr } = require('../utils/ocrParser');
+const { processIndependentOcr } = require('../utils/independentOcrEngine');
 const { requireAuth } = require('../middleware/auth');
 const {
   isValidId,
@@ -887,8 +888,18 @@ router.post('/scan-detect', async (req, res) => {
       });
     }
 
-    // Step D: Process document OCR on targetScanFile
-    const detectedData = await processDocumentOcr(targetScanFile, path.basename(targetScanFile), docType);
+    // Step D: Process document OCR on targetScanFile (checks independent OCR setting)
+    let useIndependentOcr = false;
+    try {
+      const [r] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "ocr_rapid_enabled" LIMIT 1');
+      if (r.length > 0 && r[0].setting_value === '1') {
+        useIndependentOcr = true;
+      }
+    } catch (_) {}
+
+    const detectedData = useIndependentOcr
+      ? await processIndependentOcr(targetScanFile, path.basename(targetScanFile), docType)
+      : await processDocumentOcr(targetScanFile, path.basename(targetScanFile), docType);
     const ext = path.extname(targetScanFile);
     
     // Uniquify generic/unknown ID numbers to prevent file collisions
@@ -969,7 +980,17 @@ router.post('/upload-detect', async (req, res) => {
     const buffer = Buffer.from(matches[2], 'base64');
     const ext = path.extname(fileName) || '.jpg';
  
-    const detectedData = await processDocumentOcr(buffer, fileName, docType);
+    let useIndependentOcr = false;
+    try {
+      const [r] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "ocr_rapid_enabled" LIMIT 1');
+      if (r.length > 0 && r[0].setting_value === '1') {
+        useIndependentOcr = true;
+      }
+    } catch (_) {}
+
+    const detectedData = useIndependentOcr
+      ? await processIndependentOcr(buffer, fileName, docType)
+      : await processDocumentOcr(buffer, fileName, docType);
  
     // Uniquify generic/unknown ID numbers to prevent file collisions
     const genericNames = ['unknown', 'image', 'scan', 'photo'];
