@@ -372,6 +372,22 @@ export default function App() {
       showToast('Error setting scanner configuration.', 'warn');
     }
   };
+
+  const handleToggleOcrEngine = async (key, val) => {
+    if (key === 'ocrPaddleEnabled') setOcrPaddleEnabled(val);
+    if (key === 'ocrVisionEnabled') setOcrVisionEnabled(val);
+    if (key === 'ocrScannerApiEnabled') setOcrScannerApiEnabled(val);
+    if (key === 'ocrTesseractEnabled') setOcrTesseractEnabled(val);
+    try {
+      await fetchWithAuth('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: val })
+      });
+      showToast('OCR engine updated', 'success');
+    } catch (_) { }
+  };
+
   const fetchAvailableScanners = async () => {
     try {
       const res = await fetchWithAuth('/api/settings/scanners');
@@ -2409,6 +2425,7 @@ export default function App() {
             setOcrScannerApiEnabled={setOcrScannerApiEnabled}
             ocrTesseractEnabled={ocrTesseractEnabled}
             setOcrTesseractEnabled={setOcrTesseractEnabled}
+            handleToggleOcrEngine={handleToggleOcrEngine}
           />
         )}
 
@@ -2822,7 +2839,7 @@ export default function App() {
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => setOcrPaddleEnabled(e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => handleToggleOcrEngine('ocrPaddleEnabled', e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
@@ -2837,7 +2854,7 @@ export default function App() {
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => setOcrScannerApiEnabled(e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => handleToggleOcrEngine('ocrScannerApiEnabled', e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
@@ -2852,7 +2869,7 @@ export default function App() {
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => setOcrVisionEnabled(e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => handleToggleOcrEngine('ocrVisionEnabled', e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
@@ -2862,12 +2879,12 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiFileTextLine style={{verticalAlign:'middle',marginRight:'5px',color:'#7c3aed'}} /> Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Safety Fallback)</span></div>
-                        <div className="modal-ocr-desc">Always keeps a safety fallback so scans never fail.</div>
+                        <div className="modal-ocr-name"><RiFileTextLine style={{verticalAlign:'middle',marginRight:'5px',color:'#7c3aed'}} /> Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Fallback)</span></div>
+                        <div className="modal-ocr-desc">When OFF, Tesseract is strictly disabled to maximize speed.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => setOcrTesseractEnabled(e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => handleToggleOcrEngine('ocrTesseractEnabled', e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>

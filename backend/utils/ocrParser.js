@@ -2509,16 +2509,16 @@ const checkPlustekCompanionFiles = (imagePath) => {
   return null;
 };
 
-// Orchestrates full OCR call using either premium Google Cloud Vision or local Tesseract + Sharp Pre-processing
+// Orchestrates full OCR call respecting user-selected OCR engines in settings
 const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
   try {
     console.log(`Performing OCR on document: ${fileName}...`);
 
-    // ── Load OCR engine toggle settings from DB (default: all enabled) ───────
+    // ── Load OCR engine toggle settings from DB (default: Paddle & Vision enabled, Tesseract safety fallback) ───────
     let ocrPaddleEnabled = true;
     let ocrVisionEnabled = true;
     let ocrScannerApiEnabled = true;
-    let ocrTesseractEnabled = true; // Always true as safety fallback
+    let ocrTesseractEnabled = false; // Default Tesseract OFF unless explicitly enabled
     try {
       const [ocrRows] = await db.query(
         'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("ocr_paddle_enabled", "ocr_vision_enabled", "ocr_scanner_api_enabled", "ocr_tesseract_enabled")'
@@ -2527,12 +2527,17 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         if (r.setting_key === 'ocr_paddle_enabled') ocrPaddleEnabled = r.setting_value !== '0';
         if (r.setting_key === 'ocr_vision_enabled') ocrVisionEnabled = r.setting_value !== '0';
         if (r.setting_key === 'ocr_scanner_api_enabled') ocrScannerApiEnabled = r.setting_value !== '0';
-        if (r.setting_key === 'ocr_tesseract_enabled') ocrTesseractEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_tesseract_enabled') ocrTesseractEnabled = r.setting_value === '1';
       });
-      console.log(`OCR Engines: Paddle=${ocrPaddleEnabled} Vision=${ocrVisionEnabled} ScannerAPI=${ocrScannerApiEnabled} Tesseract=${ocrTesseractEnabled}`);
+      console.log(`OCR Engines active: Paddle=${ocrPaddleEnabled} Vision=${ocrVisionEnabled} ScannerAPI=${ocrScannerApiEnabled} Tesseract=${ocrTesseractEnabled}`);
     } catch (_) { /* Use defaults if DB unreachable */ }
 
-    // Convert input to buffer (if filePath) and check companion files
+    // If all engines were toggled off, default to PaddleOCR as primary
+    if (!ocrPaddleEnabled && !ocrVisionEnabled && !ocrScannerApiEnabled && !ocrTesseractEnabled) {
+      ocrPaddleEnabled = true;
+    }
+
+    // Convert input to buffer (if filePath) and check companion files (0ms)
     let buffer = filePathOrBuffer;
     let companionData = null;
     if (typeof filePathOrBuffer === 'string') {
@@ -2548,16 +2553,31 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         const croppedFace = await extractFace(buffer, companionData.docType);
         if (croppedFace) companionData.facePhotoBase64 = croppedFace;
         return companionData;
-      } else if (companionData) {
-        console.log('Companion scanner metadata found but name is missing/placeholder. Falling through to local PaddleOCR for full image name extraction...');
       }
     }
 
-    // 0. Check if a secure external Web Service (like Regula) is configured
+    const isQidIdValid = (id) => /^[23]\d{10}$/.test(String(id || '').replace(/\D/g, ''));
+    const isIdValid = (id, dtype) => {
+      if (!id || id === 'UNKNOWN' || looksLikeFilename(id, fileName)) return false;
+      const clean = id.replace(/[^a-zA-Z0-9]/g, '');
+      if (clean.length < 6) return false;
+      if (dtype === 'QID' || docType === 'QID') return isQidIdValid(clean);
+      return true;
+    };
+
+    const isResultLowQuality = (data) => {
+      if (!data) return true;
+      if (!isIdValid(data.idNum, data.docType)) return true;
+      if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
+      if (data.name.trim().length <= 3) return true;
+      if (isGarbageOcrName(data.name)) return true;
+      if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
+      return false;
+    };
+
+    // ── 1. Check if a secure external Web Service (like Regula) is configured ──
     let externalParsed = null;
-    if (!ocrScannerApiEnabled) {
-      console.log('Scanner Web Service API: SKIPPED (disabled in settings)');
-    } else
+    if (ocrScannerApiEnabled) {
       try {
         const [settingsRows] = await db.query(
           'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_api_url", "scanner_api_username", "scanner_api_password")'
@@ -2595,39 +2615,30 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
 
             if (isExternalNameValid && externalParsed.idNum) {
               console.log('Secure Web Service scan processed successfully:', externalParsed.idNum, externalParsed.name);
-              if (!externalParsed.facePhotoBase64) {
-                try {
-                  const croppedFace = await extractFace(buffer, externalParsed.docType);
-                  if (croppedFace) externalParsed.facePhotoBase64 = croppedFace;
-                } catch (_) { }
-              }
+              const croppedFace = await extractFace(buffer, externalParsed.docType);
+              if (croppedFace) externalParsed.facePhotoBase64 = croppedFace;
               externalParsed.phone = externalParsed.phone || '';
               externalParsed.lowQuality = false;
               return externalParsed;
-            } else if (externalParsed) {
-              console.log('Secure Web Service scan returned data but name is missing/placeholder. Proceeding with local PaddleOCR...');
             }
-          } else {
-            console.warn(`External Scanner Web Service returned error status: ${response.status}`);
           }
         }
       } catch (dbErr) {
-        console.warn('Database check or Web Service OCR query failed:', dbErr.message);
+        console.warn('Web Service OCR query failed:', dbErr.message);
       }
+    }
 
-    // ── 0.5. Try local high-accuracy Python PaddleOCR (RapidOCR onnxruntime) ──────
-    if (!ocrPaddleEnabled) {
-      console.log('PaddleOCR: SKIPPED (disabled in settings)');
-    } else
+    // ── 2. Local High-Accuracy PaddleOCR (RapidOCR onnxruntime) ───────────────
+    let paddleData = null;
+    if (ocrPaddleEnabled) {
       try {
         console.log('Running local PaddleOCR (RapidOCR onnxruntime)...');
         const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer);
         const paddleText = typeof paddleRes === 'string' ? paddleRes : paddleRes?.text;
 
         if (paddleText) {
-          let paddleData = parseDocumentDetails(fileName, docType, paddleText);
+          paddleData = parseDocumentDetails(fileName, docType, paddleText);
 
-          // Merge companion file or external scanner ID/dates if missing from initial paddle parse
           if (paddleData) {
             if (companionData) {
               if (!paddleData.idNum && companionData.idNum) paddleData.idNum = companionData.idNum;
@@ -2641,34 +2652,38 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
               if (!paddleData.exp && externalParsed.expiryDate) paddleData.exp = externalParsed.expiryDate;
               if (!paddleData.nat && externalParsed.nationality) paddleData.nat = externalParsed.nationality;
             }
-          }
 
-          const isPaddleGood = !isResultLowQuality(paddleData) &&
-            paddleData.name &&
-            !PLACEHOLDER_NAMES.has(paddleData.name) &&
-            !isGarbageOcrName(paddleData.name);
+            const isPaddleGood = paddleData.idNum &&
+              !isResultLowQuality(paddleData) &&
+              paddleData.name &&
+              !PLACEHOLDER_NAMES.has(paddleData.name) &&
+              !isGarbageOcrName(paddleData.name);
 
-          if (isPaddleGood) {
-            console.log(`PaddleOCR Success: ID="${paddleData.idNum}" Name="${paddleData.name}" DocType="${paddleData.docType}"`);
-            const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
-            if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
-            paddleData.lowQuality = false;
-            return paddleData;
-          } else {
-            console.log(`PaddleOCR extracted initial text (ID="${paddleData.idNum}", Name="${paddleData.name}"). Proceeding with full pipeline verification...`);
+            if (isPaddleGood) {
+              console.log(`PaddleOCR Success in <1s: ID="${paddleData.idNum}" Name="${paddleData.name}" DocType="${paddleData.docType}"`);
+              const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
+              if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
+              paddleData.lowQuality = false;
+              return paddleData;
+            } else if (paddleData.idNum && !ocrVisionEnabled && !ocrTesseractEnabled) {
+              // If only Paddle is enabled, return result immediately
+              console.log(`PaddleOCR result (only Paddle enabled): ID="${paddleData.idNum}" Name="${paddleData.name}"`);
+              const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
+              if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
+              paddleData.lowQuality = isResultLowQuality(paddleData);
+              return paddleData;
+            }
           }
         }
       } catch (pError) {
         console.warn('PaddleOCR step skipped due to execution error:', pError.message);
       }
+    }
 
-    // ── 1. Try Google Cloud Vision API (free tier: 1000 req/month) ───────────────
-    // Key is read from DB settings first (configurable in app UI), then .env fallback.
-    // Vision gives much higher OCR accuracy than Tesseract and completes in ~1-2s.
-    let visionApiKey = null;
-    if (!ocrVisionEnabled) {
-      console.log('Google Cloud Vision: SKIPPED (disabled in settings)');
-    } else {
+    // ── 3. Google Cloud Vision API ───────────────────────────────────────────
+    let visionData = null;
+    if (ocrVisionEnabled) {
+      let visionApiKey = null;
       try {
         const [vkRows] = await db.query(
           'SELECT setting_value FROM settings WHERE setting_key = "vision_api_key" LIMIT 1'
@@ -2676,100 +2691,48 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         visionApiKey = vkRows[0]?.setting_value?.trim() || null;
       } catch (_) { }
       if (!visionApiKey) visionApiKey = (process.env.VISION_API_KEY || '').trim() || null;
-    }
 
-    if (ocrVisionEnabled && visionApiKey) {
-      // Rotate + resize FIRST so Vision also gets an optimal-sized image
-      let visionBuffer = buffer;
-      try {
-        const rawMeta = await sharp(buffer).metadata();
-        const rawW = rawMeta.width || 0;
-        const rawH = rawMeta.height || 0;
-        const targetW = Math.max(rawW, rawH) < 900 ? 1000 : 1400; // Vision handles up to 4MB base64 fine
-        visionBuffer = await sharp(buffer)
-          .rotate()
-          .resize({ width: targetW, fit: 'inside', withoutEnlargement: false })
-          .toBuffer();
-      } catch (_) { }
+      if (visionApiKey) {
+        let visionBuffer = buffer;
+        try {
+          visionBuffer = await sharp(buffer)
+            .rotate()
+            .resize({ width: 1200, fit: 'inside', withoutEnlargement: false })
+            .toBuffer();
+        } catch (_) { }
 
-      const visionText = await performVisionApiOcr(visionBuffer.toString('base64'), visionApiKey);
-      if (visionText) {
-        let details = parseDocumentDetails(fileName, docType, visionText);
-
-        // Dedicated QID Footer Crop pass if name is missing/garbage
-        if ((details.docType === 'QID' || docType === 'QID') && (PLACEHOLDER_NAMES.has(details.name) || isGarbageOcrName(details.name))) {
-          try {
-            const meta = await sharp(visionBuffer).metadata();
-            if (meta && meta.height && meta.width) {
-              const top = Math.floor(meta.height * 0.72);
-              const footerHeight = meta.height - top;
-              const footerBuffer = await sharp(visionBuffer)
-                .extract({ left: 0, top, width: meta.width, height: footerHeight })
-                .grayscale()
-                .normalize()
-                .sharpen({ sigma: 1.5 })
-                .resize({ width: meta.width * 2 })
-                .png()
-                .toBuffer();
-
-              const footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', { tessedit_pageseg_mode: '11' });
-              const footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
-              if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
-                details.name = footerName;
-              }
+        console.log('Running Google Cloud Vision OCR...');
+        const visionText = await performVisionApiOcr(visionBuffer.toString('base64'), visionApiKey);
+        if (visionText) {
+          visionData = parseDocumentDetails(fileName, docType, visionText);
+          if (visionData && visionData.idNum) {
+            const isVisionGood = !isResultLowQuality(visionData) && visionData.name && !isGarbageOcrName(visionData.name);
+            if (isVisionGood || !ocrTesseractEnabled) {
+              console.log(`Vision OCR Success in ~1s: ID="${visionData.idNum}" Name="${visionData.name}"`);
+              const croppedFace = await extractFace(visionBuffer, visionData.docType);
+              if (croppedFace) visionData.facePhotoBase64 = croppedFace;
+              visionData.lowQuality = isResultLowQuality(visionData);
+              return visionData;
             }
-          } catch (_) { }
-        }
-
-        // Auto-Orientation Fallback (180°, 90°, 270°) for upside-down scans
-        if (isResultLowQuality(details) || PLACEHOLDER_NAMES.has(details.name) || isGarbageOcrName(details.name)) {
-          for (const angle of [180, 90, 270]) {
-            try {
-              console.log(`Vision OCR auto-orienting QID scan: testing ${angle}° rotation...`);
-              const testBuffer = await sharp(visionBuffer).rotate(angle).toBuffer();
-              const testVisionText = await performVisionApiOcr(testBuffer.toString('base64'), visionApiKey);
-              if (testVisionText) {
-                const testData = parseDocumentDetails(fileName, docType, testVisionText);
-                if (!isResultLowQuality(testData) && testData.name && !isGarbageOcrName(testData.name)) {
-                  console.log(`Vision Success at ${angle}° rotation: ID="${testData.idNum}" Name="${testData.name}"`);
-                  details = testData;
-                  visionBuffer = testBuffer;
-                  break;
-                }
-              }
-            } catch (_) { }
           }
         }
-
-        // Face crop from pre-rotated vision buffer
-        const croppedFace = await extractFace(visionBuffer, details.docType);
-        if (croppedFace) details.facePhotoBase64 = croppedFace;
-        details.lowQuality = isResultLowQuality(details);
-        console.log(`Vision OCR result: name="${details.name}" id="${details.idNum}" lowQuality=${details.lowQuality}`);
-        if (!details.lowQuality) {
-          return details;
-        }
       }
-      // Vision failed / low quality — fall through to Tesseract multi-pass below
     }
 
-    // Tesseract is always available as a safety fallback even if disabled,
-    // but we log a warning when disabled to inform the admin.
+    // ── 4. Tesseract OCR (Strictly executed ONLY when enabled) ────────────────
     if (!ocrTesseractEnabled) {
-      console.log('Tesseract OCR: toggle is disabled, but continuing as safety fallback to prevent empty scan result.');
+      console.log('Tesseract OCR is disabled. Returning result from enabled engines.');
+      const bestData = paddleData || visionData || parseDocumentDetails(fileName, docType, '');
+      const croppedFace = await extractFace(buffer, bestData.docType);
+      if (croppedFace) bestData.facePhotoBase64 = croppedFace;
+      bestData.lowQuality = isResultLowQuality(bestData);
+      return bestData;
     }
 
-    // Resolve Tesseract lang data path — prefer local backend copy (eng.traineddata),
-    // fall back to the tesseract.js bundled traineddata so it works on any device.
+    // Fast Single-Pass Tesseract Setup
     const localLangDir = path.join(__dirname, '..');
     const localEngData = path.join(localLangDir, 'eng.traineddata');
     const langDir = fs.existsSync(localEngData) ? localLangDir : undefined;
-
-    const OCR_OPTS = {
-      ...(langDir ? { langPath: langDir, cachePath: langDir } : {}),
-      gzip: false,
-      tessedit_pageseg_mode: '6'
-    };
 
     const runOcrOnBuffer = async (procBuffer, lang = 'eng', customOpts = {}) => {
       const opts = {
@@ -2792,55 +2755,17 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       }
     };
 
-    const isQidIdValid = (id) => /^[23]\d{10}$/.test(String(id || '').replace(/\D/g, ''));
-    const isIdValid = (id, dtype) => {
-      if (!id || id === 'UNKNOWN' || looksLikeFilename(id, fileName)) return false;
-      const clean = id.replace(/[^a-zA-Z0-9]/g, '');
-      if (clean.length < 6) return false;
-      if (dtype === 'QID' || docType === 'QID') return isQidIdValid(clean);
-      return true;
-    };
-
-    const isResultLowQuality = (data) => {
-      if (!data) return true;
-      if (!isIdValid(data.idNum, data.docType)) return true;
-      if (!data.name || PLACEHOLDER_NAMES.has(data.name)) return true;
-      if (data.name.trim().length <= 3) return true;
-      if (isGarbageOcrName(data.name)) return true;
-      if (data.name.match(/\b[A-Z]*(LKL|CLL|XXX|KK|SS|CC)\b/i)) return true;
-      return false;
-    };
-
-    // ── STEP 0: Rotate ONCE (EXIF) + smart DPI-aware resize ─────────────────────
-    // High-DPI scans (600dpi) produce huge images (3000x4000+) that make Tesseract
-    // extremely slow. We auto-detect oversized images and scale down to ~1200px wide
-    // (Tesseract sweet spot). Low-DPI / small images are left at native resolution.
-    // We do this ONE TIME and reuse `rotatedBuffer` across all passes — no re-rotate.
     let rotatedBuffer;
     try {
-      const rawMeta = await sharp(buffer).metadata();
-      const rawW = rawMeta.width || 0;
-      const rawH = rawMeta.height || 0;
-      // Target 1200px wide — optimal for Tesseract speed vs accuracy.
-      // For very small images (<900px) we still upscale slightly (1000px) to help OCR.
-      const targetW = Math.max(rawW, rawH) < 900 ? 1000 : 1200;
       rotatedBuffer = await sharp(buffer)
-        .rotate()  // auto-rotate by EXIF — only needed here
-        .resize({ width: targetW, fit: 'inside', withoutEnlargement: false })
+        .rotate()
+        .resize({ width: 1100, fit: 'inside', withoutEnlargement: false })
         .toBuffer();
-      const meta = await sharp(rotatedBuffer).metadata();
-      console.log(`Image: ${rawW}x${rawH} → rotated+resized to ${meta.width}x${meta.height} (target ${targetW}px)`);
-    } catch (err) {
-      console.warn('Rotate/resize failed, using raw buffer:', err.message);
+    } catch (_) {
       rotatedBuffer = buffer;
     }
 
-    // ── STEP 1: Start face crop in PARALLEL with OCR pre-processing ──────────────
-    // We pass the already-rotated buffer so extractFace doesn't re-rotate.
-    const faceCropPromise = extractFace(rotatedBuffer, docType);
-
-    // ── PASS 1: Normalize + sharpen on pre-rotated buffer (fast, ~5-8s) ─────────
-    console.log('Pass 1: Fast OCR...');
+    console.log('Running Fast Tesseract OCR (single optimized pass)...');
     let pass1Buffer;
     try {
       pass1Buffer = await sharp(rotatedBuffer)
@@ -2848,216 +2773,50 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         .normalize()
         .sharpen({ sigma: 1 })
         .toBuffer();
-    } catch (err) {
+    } catch (_) {
       pass1Buffer = rotatedBuffer;
     }
 
     let ocrText = await runOcrOnBuffer(pass1Buffer, 'eng');
     let detectedData = parseDocumentDetails(fileName, docType, ocrText);
 
-    // ── PASS 2: De-Watermarking + Contrast Boost (Removes UV/Holographic Watermarks) ──────
-    // Reuses rotatedBuffer (no second rotate) — saves ~3-5s.
-    if (isResultLowQuality(detectedData)) {
-      console.log('Pass 2: Running De-Watermarking + Contrast Boost OCR...');
-      let pass2Buffer;
-      try {
-        // Extract Red channel (0) to erase UV green/pink/cyan watermarks and linear boost contrast
-        pass2Buffer = await sharp(rotatedBuffer)
-          .extractChannel(0)
-          .normalize()
-          .linear(2.5, -110)
-          .sharpen({ sigma: 2 })
-          .toBuffer();
-      } catch (err) {
-        pass2Buffer = pass1Buffer;
-      }
-      const ocrTextPass2 = await runOcrOnBuffer(pass2Buffer, 'eng');
-      const detectedDataPass2 = parseDocumentDetails(fileName, docType, ocrTextPass2);
-      if (!isResultLowQuality(detectedDataPass2) ||
-        (isIdValid(detectedDataPass2.idNum, detectedDataPass2.docType) && !isIdValid(detectedData.idNum, detectedData.docType)) ||
-        (detectedDataPass2.name && !PLACEHOLDER_NAMES.has(detectedDataPass2.name) && !isGarbageOcrName(detectedDataPass2.name) && isGarbageOcrName(detectedData.name))) {
-        detectedData = detectedDataPass2;
-        ocrText = ocrTextPass2;
-      }
+    // Fast Early Exit: If ID and Name are valid, return immediately
+    if (detectedData.idNum && detectedData.name && !isResultLowQuality(detectedData) && !isGarbageOcrName(detectedData.name)) {
+      console.log(`Fast Tesseract Success: ID="${detectedData.idNum}" Name="${detectedData.name}"`);
+      const croppedFace = await extractFace(rotatedBuffer, detectedData.docType);
+      if (croppedFace) detectedData.facePhotoBase64 = croppedFace;
+      detectedData.lowQuality = false;
+      return detectedData;
     }
 
-    // ── PASS 3: Passport-only QID cross-check ────────────────────────────────────
-    // Reuses already-computed ocrText — NO extra Tesseract call needed (saves ~15-20s).
-    if (docType === 'Passport' && !isIdValid(detectedData.idNum, detectedData.docType)) {
-      console.log('Pass 3: QID cross-check on existing OCR text (no re-scan)...');
-      const detectedDataPass3 = parseDocumentDetails(fileName, 'QID', ocrText);
-      if (isIdValid(detectedDataPass3.idNum, 'QID') && detectedDataPass3.docType === 'QID') {
-        detectedData = detectedDataPass3;
-      }
-    }
-
-    // ── PASS 4: Dedicated QID Footer Bar Crop (Red Channel De-Blueing + 2x PNG + PSM 11/6) ──────
-    // Directly targets the bottom blue footer bar containing "Name: <FULL NAME>"
-    // Blue background is eliminated by Red Channel Extraction (turns blue bar white, bold text black)
-    if (detectedData.docType === 'QID' || docType === 'QID' || PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name)) {
+    // Fast QID Footer Crop pass (Single run if name missing on QID)
+    if ((detectedData.docType === 'QID' || docType === 'QID') && (PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name))) {
       try {
-        console.log('Pass 4: Running Dedicated QID Blue Footer OCR Crop (Red Channel De-Blueing + PSM 11/6)...');
         const meta = await sharp(rotatedBuffer).metadata();
         if (meta && meta.height && meta.width) {
-          const topsToTry = [
-            Math.floor(meta.height * 0.77),
-            Math.floor(meta.height * 0.70)
-          ];
+          const top = Math.floor(meta.height * 0.74);
+          const footerHeight = meta.height - top;
+          const footerBuffer = await sharp(rotatedBuffer)
+            .extract({ left: 0, top, width: meta.width, height: footerHeight })
+            .grayscale()
+            .linear(2.2, -90)
+            .sharpen({ sigma: 1.5 })
+            .resize({ width: meta.width * 2 })
+            .png()
+            .toBuffer();
 
-          for (const top of topsToTry) {
-            const footerHeight = meta.height - top;
-            const croppedRaw = sharp(rotatedBuffer).extract({ left: 0, top, width: meta.width, height: footerHeight });
-
-            // Create 3 binarization variants to handle all light/dark blue backgrounds and bold font weights:
-            // 1) Red channel extraction (eliminates blue background color completely)
-            // 2) Linear high-contrast boost (sharpens bold black text on light blue)
-            // 3) Standard grayscale normalize fallback
-            const bufferVariants = [];
-
-            try {
-              // Variant A: Red Channel De-Blueing (Red channel = 0). Blue reflects high red/green under flash -> turns pure white!
-              const redChannelBuf = await croppedRaw.clone()
-                .extractChannel(0) // 0 = Red channel
-                .normalize()
-                .threshold(150)
-                .resize({ width: meta.width * 2 })
-                .png()
-                .toBuffer();
-              bufferVariants.push(redChannelBuf);
-            } catch (_) { }
-
-            try {
-              // Variant B: High Contrast Linear Boost
-              const linearBuf = await croppedRaw.clone()
-                .grayscale()
-                .linear(2.2, -90)
-                .sharpen({ sigma: 2 })
-                .resize({ width: meta.width * 2 })
-                .png()
-                .toBuffer();
-              bufferVariants.push(linearBuf);
-            } catch (_) { }
-
-            try {
-              // Variant C: Standard Grayscale Normalize
-              const standardBuf = await croppedRaw.clone()
-                .grayscale()
-                .normalize()
-                .sharpen({ sigma: 1.5 })
-                .resize({ width: meta.width * 2 })
-                .png()
-                .toBuffer();
-              bufferVariants.push(standardBuf);
-            } catch (_) { }
-
-            for (const footerBuffer of bufferVariants) {
-              // Try PSM 11 (sparse text) and PSM 6 (single block)
-              let footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-                tessedit_pageseg_mode: '11',
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
-              });
-
-              if (!footerOcrText || footerOcrText.trim().length < 4) {
-                footerOcrText = await runOcrOnBuffer(footerBuffer, 'eng', {
-                  tessedit_pageseg_mode: '6',
-                  tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
-                });
-              }
-
-              // Strip Arabic lines if any leaked into crop
-              footerOcrText = (footerOcrText || '').split('\n')
-                .filter(l => !/[\u0600-\u06FF]/.test(l))
-                .join('\n');
-
-              console.log(`QID Footer Crop (top ${top}px) OCR Text:`, footerOcrText);
-              let footerName = extractQidNameFromText(footerOcrText) || extractNameWithFallback(footerOcrText);
-
-              // Direct Name: regex match on 2x scaled footer strip text
-              if (!footerName || PLACEHOLDER_NAMES.has(footerName) || isGarbageOcrName(footerName)) {
-                const nameMatch = footerOcrText.match(/(?:NAME|NAINE|NOME|NANE|FULL\s*NAME|NARNE|NARN|NAIN|WAME|NME)\s*[:\s\/-]?\s*([A-Za-z\s'-]+)/i);
-                if (nameMatch && nameMatch[1]) {
-                  const rawMatch = nameMatch[1].replace(/(?:ministry\s*of\s*interior|state\s*of\s*qatar|residency\s*permit|\bministry\b|\binterior\b)/gi, '').trim();
-                  const cleanedMatch = cleanExtractedName(rawMatch);
-                  if (cleanedMatch && cleanedMatch.length >= 4 && !isGarbageOcrName(cleanedMatch)) {
-                    footerName = cleanedMatch;
-                  }
-                }
-              }
-
-              if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
-                console.log('QID Footer Name Extracted Successfully:', footerName);
-                detectedData.name = footerName;
-                break;
-              }
-            }
-
-            if (detectedData.name && !PLACEHOLDER_NAMES.has(detectedData.name) && !isGarbageOcrName(detectedData.name)) {
-              break;
-            }
+          const footerText = await runOcrOnBuffer(footerBuffer, 'eng', { tessedit_pageseg_mode: '6' });
+          const footerName = extractQidNameFromText(footerText) || extractNameWithFallback(footerText);
+          if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
+            detectedData.name = footerName;
           }
         }
-      } catch (footerErr) {
-        console.warn('Dedicated QID Footer OCR crop error:', footerErr.message);
-      }
+      } catch (_) { }
     }
 
-    // ── PASS 5: Auto-Orientation Fallback (180°, 90°, 270°) for upside-down scans ─
-    if (isResultLowQuality(detectedData) || PLACEHOLDER_NAMES.has(detectedData.name) || isGarbageOcrName(detectedData.name)) {
-      const angles = [180, 90, 270];
-      for (const angle of angles) {
-        try {
-          console.log(`Auto-orienting QID scan: testing ${angle}° rotation...`);
-          const testBuffer = await sharp(rotatedBuffer).rotate(angle).toBuffer();
-          const testPassBuffer = await sharp(testBuffer).grayscale().normalize().sharpen({ sigma: 1 }).toBuffer();
-          const testOcrText = await runOcrOnBuffer(testPassBuffer, 'eng');
-          const testData = parseDocumentDetails(fileName, docType, testOcrText);
-
-          // Dedicated footer crop on rotated buffer
-          const testMeta = await sharp(testBuffer).metadata();
-          if (testMeta && testMeta.height && testMeta.width) {
-            const top = Math.floor(testMeta.height * 0.72);
-            const footerHeight = testMeta.height - top;
-            const footerBuffer = await sharp(testBuffer)
-              .extract({ left: 0, top, width: testMeta.width, height: footerHeight })
-              .grayscale()
-              .normalize()
-              .sharpen({ sigma: 1.5 })
-              .resize({ width: testMeta.width * 2 })
-              .png()
-              .toBuffer();
-
-            const footerText = await runOcrOnBuffer(footerBuffer, 'eng', {
-              tessedit_pageseg_mode: '11',
-              tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: -\''
-            });
-            const footerName = extractQidNameFromText(footerText) || extractNameWithFallback(footerText);
-            if (footerName && !PLACEHOLDER_NAMES.has(footerName) && !isGarbageOcrName(footerName) && footerName.length >= 4) {
-              testData.name = footerName;
-            }
-          }
-
-          if (!isResultLowQuality(testData) && testData.name && !isGarbageOcrName(testData.name)) {
-            console.log(`Success! Found valid QID details at ${angle}° rotation: ID="${testData.idNum}" Name="${testData.name}"`);
-            detectedData = testData;
-            rotatedBuffer = testBuffer; // update rotated buffer for correct face cropping
-            break;
-          }
-        } catch (rotErr) {
-          console.warn(`Rotation ${angle}° failed:`, rotErr.message);
-        }
-      }
-    }
-
-    // ── AWAIT parallel face crop ──────────────────────────────────────────────────
-    console.log('Applying face crop...');
-    const croppedFace = await extractFace(rotatedBuffer, docType);
-    if (croppedFace) {
-      detectedData.facePhotoBase64 = croppedFace;
-    }
-
-    detectedData.lowQuality = isResultLowQuality(detectedData) ||
-      PLACEHOLDER_NAMES.has(detectedData.name);
-
+    const croppedFace = await extractFace(rotatedBuffer, detectedData.docType);
+    if (croppedFace) detectedData.facePhotoBase64 = croppedFace;
+    detectedData.lowQuality = isResultLowQuality(detectedData);
     return detectedData;
 
   } catch (ocrErr) {
