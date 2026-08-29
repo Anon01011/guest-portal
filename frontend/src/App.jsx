@@ -838,8 +838,19 @@ export default function App() {
         // Proper title case the name
         name = name.split(' ').map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
 
-        // Extract Passport Number (first 9 chars, strip angle brackets)
-        const idNum = line2.substring(0, 9).replace(/</g, '').trim();
+        // Extract Passport Number (first 9 chars, strip angle brackets) & correct Z vs 2 OCR misreads
+        let rawIdNum = line2.substring(0, 9).replace(/</g, '').trim().toUpperCase();
+        let idNum = rawIdNum;
+        if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{7}$/.test(rawIdNum)) {
+          idNum = rawIdNum[0] + rawIdNum.substring(1)
+            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
+        } else if (/^2[0-9OoQqIliT|!SsBbZzGg]{7}$/.test(rawIdNum)) {
+          idNum = 'Z' + rawIdNum.substring(1)
+            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
+        } else if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{8}$/.test(rawIdNum)) {
+          idNum = rawIdNum[0] + rawIdNum.substring(1)
+            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
+        }
 
         // Extract DOB (YYMMDD at index 13 to 19)
         const yy = line2.substring(13, 15);

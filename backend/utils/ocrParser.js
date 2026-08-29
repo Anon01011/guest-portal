@@ -52,7 +52,7 @@ const runPaddleOcr = (filePathOrBuffer) => {
       // This reduces ONNX OCR execution time from 8s down to <1.2s!
       let bufToProcess = Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : null;
       if (!bufToProcess && typeof filePathOrBuffer === 'string') {
-        try { bufToProcess = fs.readFileSync(filePathOrBuffer); } catch (_) {}
+        try { bufToProcess = fs.readFileSync(filePathOrBuffer); } catch (_) { }
       }
 
       if (bufToProcess) {
@@ -69,7 +69,7 @@ const runPaddleOcr = (filePathOrBuffer) => {
             fs.writeFileSync(tempPath, resizedBuf);
             imagePath = tempPath;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!tempPath && Buffer.isBuffer(filePathOrBuffer)) {
@@ -89,7 +89,7 @@ const runPaddleOcr = (filePathOrBuffer) => {
           }
 
           if (tempPath && fs.existsSync(tempPath)) {
-            try { fs.unlinkSync(tempPath); } catch (_) {}
+            try { fs.unlinkSync(tempPath); } catch (_) { }
           }
 
           if (err || !stdout) {
@@ -122,7 +122,7 @@ const runPaddleOcr = (filePathOrBuffer) => {
       runWithBin('python');
     } catch (e) {
       if (tempPath && fs.existsSync(tempPath)) {
-        try { fs.unlinkSync(tempPath); } catch (_) {}
+        try { fs.unlinkSync(tempPath); } catch (_) { }
       }
       console.warn('runPaddleOcr exception:', e.message);
       resolve(null);
@@ -350,19 +350,77 @@ const extractNameWithFallback = (ocrText) => {
 };
 
 
-// Helper to clean and correct passport numbers (correcting 0 vs O confusion)
+// Helper to clean and correct passport numbers (correcting 0 vs O, 1 vs I/L/T, 2 vs Z confusion)
 const cleanPassportNumber = (pNo) => {
   if (!pNo) return '';
-  let clean = pNo.toUpperCase().replace(/\s/g, '');
-  // Indian passport format: 1 letter + 7 digits. If last character is 'O' or 'o', convert to '0'.
-  if (/^[A-Z][0-9OoIliT]{7,8}$/.test(clean)) {
-    return clean[0] + clean.substring(1).replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+  let clean = pNo.toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+  if (!clean) return '';
+
+  // 1. Standard 8-character passport format (e.g. Indian passport: 1 letter + 7 digits)
+  // If starts with a letter (e.g. Z1234567, A1234567, K1234567):
+  if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{7}$/.test(clean)) {
+    const firstChar = clean[0];
+    const restDigits = clean.substring(1)
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Zz]/g, '2')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8')
+      .replace(/[Gg]/g, '6');
+    return firstChar + restDigits;
   }
-  // Purely numeric with potential O/I misreads:
-  if (/^[0-9OoIliT]{7,10}$/.test(clean)) {
-    return clean.replace(/[Oo]/g, '0').replace(/[IliT]/g, '1');
+
+  // 2. If 8 characters long starting with '2' followed by 7 digits (e.g. 21234567):
+  // In Indian passports (and standard 8-char passports), the number NEVER starts with digit '2'.
+  // OCR frequently misreads the letter 'Z' as digit '2'. Correct the leading '2' to 'Z'.
+  if (/^2[0-9OoQqIliT|!SsBbZzGg]{7}$/.test(clean)) {
+    const restDigits = clean.substring(1)
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Zz]/g, '2')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8')
+      .replace(/[Gg]/g, '6');
+    return 'Z' + restDigits;
   }
-  // General: Replace 'O' with '0' if it is immediately adjacent to digits on both sides or at boundaries
+
+  // 3. 1 letter + 8 digits (9 chars total, e.g. USA / UK / other passports)
+  if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{8}$/.test(clean)) {
+    const firstChar = clean[0];
+    const restDigits = clean.substring(1)
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Zz]/g, '2')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8')
+      .replace(/[Gg]/g, '6');
+    return firstChar + restDigits;
+  }
+
+  // 4. 2 letters + 7 digits (9 chars total, e.g. Philippine / some EU passports)
+  if (/^[A-Z]{2}[0-9OoQqIliT|!SsBbZzGg]{7}$/.test(clean)) {
+    const letters = clean.substring(0, 2);
+    const restDigits = clean.substring(2)
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Zz]/g, '2')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8')
+      .replace(/[Gg]/g, '6');
+    return letters + restDigits;
+  }
+
+  // 5. Purely numeric passport numbers (7 to 10 digits)
+  if (/^[0-9OoQqIliT|!SsBbGg]{7,10}$/.test(clean)) {
+    return clean
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8')
+      .replace(/[Gg]/g, '6');
+  }
+
+  // 6. General: Replace 'O' with '0' if it is immediately adjacent to digits on both sides or at boundaries
   clean = clean.replace(/(\d)[Oo](\d)/g, '$10$2');
   clean = clean.replace(/(\d)[Oo]\b/g, '$10');
   clean = clean.replace(/\b[Oo](\d)/g, '0$1');
@@ -947,34 +1005,9 @@ const parseMRZ = (ocrText) => {
           const fullName = `${aligned.givenNames} ${aligned.surname}`.trim().toUpperCase();
           const nationality = extractNationality(f.nationality, ocrText);
 
-          let strictDocNum = f.documentNumber.toUpperCase();
-          // Z→2 OCR FIX: strict MRZ parser also receives corrupted line2 if Tesseract read Z as 2.
-          // If the document number is purely numeric, check the visual page text for a letter-prefix version.
-          if (/^\d+$/.test(strictDocNum)) {
-            const visualLines = filterMrzLinesFromText(ocrText);
-            const vp = /\b([A-Z][0-9A-Z]{6,8})\b/g;
-            let vm;
-            while ((vm = vp.exec(visualLines)) !== null) {
-              const cand = cleanPassportNumber(vm[1]);
-              if (
-                cand.length >= 6 && cand.length <= 9 &&
-                /[A-Z]/.test(cand)
-              ) {
-                const candDigits = cand.replace(/[^0-9]/g, '');
-                const mrzDigits = strictDocNum.replace(/[^0-9]/g, '');
-                // Z misread as 2 adds an extra leading digit; check suffix match
-                if (mrzDigits.endsWith(candDigits) || candDigits.endsWith(mrzDigits)) {
-                  console.log(`Strict MRZ Z→2 fix: "${strictDocNum}" → "${cand}"`);
-                  strictDocNum = cand;
-                  break;
-                }
-              }
-            }
-          }
-
           return {
             name: fullName,
-            idNum: strictDocNum,
+            idNum: cleanPassportNumber(f.documentNumber),
             docType: 'Passport',
             nat: nationality,
             dob: formatDate(f.birthDate),
@@ -1638,34 +1671,6 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
       }
     }
 
-    // ── Z→2 OCR FIX: Tesseract/PaddleOCR frequently misreads 'Z' as '2' in MRZ monospaced font.
-    // When the MRZ returns a purely-numeric number (e.g. "26015112") but the visual page text
-    // shows an alphanumeric number with a letter prefix (e.g. "Z6015112"), prefer the visual one.
-    if (mrzData.idNum && /^\d+$/.test(mrzData.idNum)) {
-      // Scan the non-MRZ visual page text for passport number patterns that have a letter prefix
-      const visualPageText = filterMrzLinesFromText(ocrText);
-      const visualPassRegex = /\b([A-Z][0-9A-Z]{6,8})\b/g;
-      let vMatch;
-      while ((vMatch = visualPassRegex.exec(visualPageText)) !== null) {
-        const candidate = cleanPassportNumber(vMatch[1]);
-        // Accept if: alphanumeric, and reasonable length (6-9 chars)
-        if (
-          candidate.length >= 6 && candidate.length <= 9 &&
-          isValidPassportNo(candidate) &&
-          /[A-Z]/.test(candidate)
-        ) {
-          const candDigits = candidate.replace(/[^0-9]/g, '');
-          const mrzDigits = mrzData.idNum.replace(/[^0-9]/g, '');
-          // Z misread as 2 adds an extra leading digit; check suffix match
-          if (mrzDigits.endsWith(candDigits) || candDigits.endsWith(mrzDigits)) {
-            console.log(`Z→2 OCR fix: Corrected passport number from "${mrzData.idNum}" to "${candidate}" using visual page text`);
-            mrzData.idNum = candidate;
-            break;
-          }
-        }
-      }
-    }
-
     // Correct invalid DOB/Expiry formats (like 2000-00-00 or default) from found dates
     const foundDates = extractDates(ocrText);
     if (foundDates.length > 0) {
@@ -1819,23 +1824,16 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
   let detectedName = '';
 
   // Extract ID / Passport Number from text
-  const qidMatch = extractQidNumberFromText(ocrText);
-  if (qidMatch) {
-    detectedId = qidMatch;
-    detectedDocType = 'QID';
-    detectedNat = extractQidNationality(ocrText, qidMatch.substring(3, 6));
-  } else {
+  if (detectedDocType === 'Passport' || isPassportExpected) {
     const loosePassNo = extractPassportNumberLoosely(ocrText);
     if (loosePassNo) {
       detectedId = loosePassNo;
       detectedDocType = 'Passport';
     } else {
-      // Try to find Passport Number: e.g. "P QAT 00000000" or "Passport No 00000000"
       const passMatch1 = ocrText.match(/P\s+[A-Z]{3}\s+([A-Z0-9]+)/i);
       const passMatch2 = ocrText.match(/(?:passport|pass|doc|id)\s*no\.?[:\s]+([a-z0-9]+)/i);
       const passMatch3 = ocrText.match(/\b([A-Z0-9]{8,9})\b/i);
 
-      // Stricter check: real IDs or Passports MUST contain at least 4 actual digits to avoid matching pure text words (like NAONAITY)
       const hasEnoughDigits = (str) => {
         if (!str) return false;
         const digits = str.replace(/[^0-9]/g, '');
@@ -1847,14 +1845,48 @@ const parseDocumentDetails = (fileName, docType, ocrText = '') => {
         detectedDocType = 'Passport';
       } else if (passMatch2 && hasEnoughDigits(passMatch2[1])) {
         detectedId = cleanPassportNumber(passMatch2[1]);
-        if (detectedDocType === 'QID' || detectedId.length === 11) {
-          detectedDocType = 'QID';
-        } else {
-          detectedDocType = 'Passport';
-        }
-      } else if (passMatch3 && hasEnoughDigits(passMatch3[1]) && detectedDocType !== 'QID') {
+        detectedDocType = 'Passport';
+      } else if (passMatch3 && hasEnoughDigits(passMatch3[1])) {
         detectedId = cleanPassportNumber(passMatch3[1]);
         detectedDocType = 'Passport';
+      }
+    }
+  } else {
+    const qidMatch = extractQidNumberFromText(ocrText);
+    if (qidMatch) {
+      detectedId = qidMatch;
+      detectedDocType = 'QID';
+      detectedNat = extractQidNationality(ocrText, qidMatch.substring(3, 6));
+    } else {
+      const loosePassNo = extractPassportNumberLoosely(ocrText);
+      if (loosePassNo) {
+        detectedId = loosePassNo;
+        detectedDocType = 'Passport';
+      } else {
+        const passMatch1 = ocrText.match(/P\s+[A-Z]{3}\s+([A-Z0-9]+)/i);
+        const passMatch2 = ocrText.match(/(?:passport|pass|doc|id)\s*no\.?[:\s]+([a-z0-9]+)/i);
+        const passMatch3 = ocrText.match(/\b([A-Z0-9]{8,9})\b/i);
+
+        const hasEnoughDigits = (str) => {
+          if (!str) return false;
+          const digits = str.replace(/[^0-9]/g, '');
+          return digits.length >= 4;
+        };
+
+        if (passMatch1 && hasEnoughDigits(passMatch1[1])) {
+          detectedId = cleanPassportNumber(passMatch1[1]);
+          detectedDocType = 'Passport';
+        } else if (passMatch2 && hasEnoughDigits(passMatch2[1])) {
+          detectedId = cleanPassportNumber(passMatch2[1]);
+          if (detectedId.length === 11) {
+            detectedDocType = 'QID';
+          } else {
+            detectedDocType = 'Passport';
+          }
+        } else if (passMatch3 && hasEnoughDigits(passMatch3[1])) {
+          detectedId = cleanPassportNumber(passMatch3[1]);
+          detectedDocType = 'Passport';
+        }
       }
     }
   }
@@ -2492,10 +2524,10 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
         'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("ocr_paddle_enabled", "ocr_vision_enabled", "ocr_scanner_api_enabled", "ocr_tesseract_enabled")'
       );
       ocrRows.forEach(r => {
-        if (r.setting_key === 'ocr_paddle_enabled')      ocrPaddleEnabled = r.setting_value !== '0';
-        if (r.setting_key === 'ocr_vision_enabled')      ocrVisionEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_paddle_enabled') ocrPaddleEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_vision_enabled') ocrVisionEnabled = r.setting_value !== '0';
         if (r.setting_key === 'ocr_scanner_api_enabled') ocrScannerApiEnabled = r.setting_value !== '0';
-        if (r.setting_key === 'ocr_tesseract_enabled')   ocrTesseractEnabled = r.setting_value !== '0';
+        if (r.setting_key === 'ocr_tesseract_enabled') ocrTesseractEnabled = r.setting_value !== '0';
       });
       console.log(`OCR Engines: Paddle=${ocrPaddleEnabled} Vision=${ocrVisionEnabled} ScannerAPI=${ocrScannerApiEnabled} Tesseract=${ocrTesseractEnabled}`);
     } catch (_) { /* Use defaults if DB unreachable */ }
@@ -2526,109 +2558,109 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
     if (!ocrScannerApiEnabled) {
       console.log('Scanner Web Service API: SKIPPED (disabled in settings)');
     } else
-    try {
-      const [settingsRows] = await db.query(
-        'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_api_url", "scanner_api_username", "scanner_api_password")'
-      );
-      const settingsMap = {};
-      settingsRows.forEach(r => { settingsMap[r.setting_key] = r.setting_value; });
+      try {
+        const [settingsRows] = await db.query(
+          'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_api_url", "scanner_api_username", "scanner_api_password")'
+        );
+        const settingsMap = {};
+        settingsRows.forEach(r => { settingsMap[r.setting_key] = r.setting_value; });
 
-      const apiUrl = settingsMap['scanner_api_url'];
-      const apiUser = settingsMap['scanner_api_username'];
-      const apiPass = settingsMap['scanner_api_password'];
+        const apiUrl = settingsMap['scanner_api_url'];
+        const apiUser = settingsMap['scanner_api_username'];
+        const apiPass = settingsMap['scanner_api_password'];
 
-      if (apiUrl && apiUrl.trim()) {
-        console.log(`Using configured secure external Scanner Web Service at: ${apiUrl}...`);
-        const base64Image = buffer.toString('base64');
-        const headers = { 'Content-Type': 'application/json' };
-        if (apiUser && apiPass) {
-          headers['Authorization'] = 'Basic ' + Buffer.from(`${apiUser}:${apiPass}`).toString('base64');
-        }
-
-        const response = await fetch(`${apiUrl.trim()}/api/process`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            processParam: { scenario: 'FullProcess' },
-            List: [{ ImageData: { image: base64Image }, light: 6 }]
-          })
-        });
-
-        if (response.ok) {
-          const respData = await response.json();
-          externalParsed = parseRegulaResponse(respData);
-          const isExternalNameValid = externalParsed && externalParsed.name &&
-            !PLACEHOLDER_NAMES.has(externalParsed.name) &&
-            !isGarbageOcrName(externalParsed.name);
-
-          if (isExternalNameValid && externalParsed.idNum) {
-            console.log('Secure Web Service scan processed successfully:', externalParsed.idNum, externalParsed.name);
-            if (!externalParsed.facePhotoBase64) {
-              try {
-                const croppedFace = await extractFace(buffer, externalParsed.docType);
-                if (croppedFace) externalParsed.facePhotoBase64 = croppedFace;
-              } catch (_) { }
-            }
-            externalParsed.phone = externalParsed.phone || '';
-            externalParsed.lowQuality = false;
-            return externalParsed;
-          } else if (externalParsed) {
-            console.log('Secure Web Service scan returned data but name is missing/placeholder. Proceeding with local PaddleOCR...');
+        if (apiUrl && apiUrl.trim()) {
+          console.log(`Using configured secure external Scanner Web Service at: ${apiUrl}...`);
+          const base64Image = buffer.toString('base64');
+          const headers = { 'Content-Type': 'application/json' };
+          if (apiUser && apiPass) {
+            headers['Authorization'] = 'Basic ' + Buffer.from(`${apiUser}:${apiPass}`).toString('base64');
           }
-        } else {
-          console.warn(`External Scanner Web Service returned error status: ${response.status}`);
+
+          const response = await fetch(`${apiUrl.trim()}/api/process`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              processParam: { scenario: 'FullProcess' },
+              List: [{ ImageData: { image: base64Image }, light: 6 }]
+            })
+          });
+
+          if (response.ok) {
+            const respData = await response.json();
+            externalParsed = parseRegulaResponse(respData);
+            const isExternalNameValid = externalParsed && externalParsed.name &&
+              !PLACEHOLDER_NAMES.has(externalParsed.name) &&
+              !isGarbageOcrName(externalParsed.name);
+
+            if (isExternalNameValid && externalParsed.idNum) {
+              console.log('Secure Web Service scan processed successfully:', externalParsed.idNum, externalParsed.name);
+              if (!externalParsed.facePhotoBase64) {
+                try {
+                  const croppedFace = await extractFace(buffer, externalParsed.docType);
+                  if (croppedFace) externalParsed.facePhotoBase64 = croppedFace;
+                } catch (_) { }
+              }
+              externalParsed.phone = externalParsed.phone || '';
+              externalParsed.lowQuality = false;
+              return externalParsed;
+            } else if (externalParsed) {
+              console.log('Secure Web Service scan returned data but name is missing/placeholder. Proceeding with local PaddleOCR...');
+            }
+          } else {
+            console.warn(`External Scanner Web Service returned error status: ${response.status}`);
+          }
         }
+      } catch (dbErr) {
+        console.warn('Database check or Web Service OCR query failed:', dbErr.message);
       }
-    } catch (dbErr) {
-      console.warn('Database check or Web Service OCR query failed:', dbErr.message);
-    }
 
     // ── 0.5. Try local high-accuracy Python PaddleOCR (RapidOCR onnxruntime) ──────
     if (!ocrPaddleEnabled) {
       console.log('PaddleOCR: SKIPPED (disabled in settings)');
     } else
-    try {
-      console.log('Running local PaddleOCR (RapidOCR onnxruntime)...');
-      const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer);
-      const paddleText = typeof paddleRes === 'string' ? paddleRes : paddleRes?.text;
+      try {
+        console.log('Running local PaddleOCR (RapidOCR onnxruntime)...');
+        const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer);
+        const paddleText = typeof paddleRes === 'string' ? paddleRes : paddleRes?.text;
 
-      if (paddleText) {
-        let paddleData = parseDocumentDetails(fileName, docType, paddleText);
+        if (paddleText) {
+          let paddleData = parseDocumentDetails(fileName, docType, paddleText);
 
-        // Merge companion file or external scanner ID/dates if missing from initial paddle parse
-        if (paddleData) {
-          if (companionData) {
-            if (!paddleData.idNum && companionData.idNum) paddleData.idNum = companionData.idNum;
-            if (!paddleData.dob && companionData.dob) paddleData.dob = companionData.dob;
-            if (!paddleData.exp && companionData.expiryDate) paddleData.exp = companionData.expiryDate;
-            if (!paddleData.nat && companionData.nationality) paddleData.nat = companionData.nationality;
+          // Merge companion file or external scanner ID/dates if missing from initial paddle parse
+          if (paddleData) {
+            if (companionData) {
+              if (!paddleData.idNum && companionData.idNum) paddleData.idNum = companionData.idNum;
+              if (!paddleData.dob && companionData.dob) paddleData.dob = companionData.dob;
+              if (!paddleData.exp && companionData.expiryDate) paddleData.exp = companionData.expiryDate;
+              if (!paddleData.nat && companionData.nationality) paddleData.nat = companionData.nationality;
+            }
+            if (externalParsed) {
+              if (!paddleData.idNum && externalParsed.idNum) paddleData.idNum = externalParsed.idNum;
+              if (!paddleData.dob && externalParsed.dob) paddleData.dob = externalParsed.dob;
+              if (!paddleData.exp && externalParsed.expiryDate) paddleData.exp = externalParsed.expiryDate;
+              if (!paddleData.nat && externalParsed.nationality) paddleData.nat = externalParsed.nationality;
+            }
           }
-          if (externalParsed) {
-            if (!paddleData.idNum && externalParsed.idNum) paddleData.idNum = externalParsed.idNum;
-            if (!paddleData.dob && externalParsed.dob) paddleData.dob = externalParsed.dob;
-            if (!paddleData.exp && externalParsed.expiryDate) paddleData.exp = externalParsed.expiryDate;
-            if (!paddleData.nat && externalParsed.nationality) paddleData.nat = externalParsed.nationality;
+
+          const isPaddleGood = !isResultLowQuality(paddleData) &&
+            paddleData.name &&
+            !PLACEHOLDER_NAMES.has(paddleData.name) &&
+            !isGarbageOcrName(paddleData.name);
+
+          if (isPaddleGood) {
+            console.log(`PaddleOCR Success: ID="${paddleData.idNum}" Name="${paddleData.name}" DocType="${paddleData.docType}"`);
+            const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
+            if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
+            paddleData.lowQuality = false;
+            return paddleData;
+          } else {
+            console.log(`PaddleOCR extracted initial text (ID="${paddleData.idNum}", Name="${paddleData.name}"). Proceeding with full pipeline verification...`);
           }
         }
-
-        const isPaddleGood = !isResultLowQuality(paddleData) &&
-          paddleData.name &&
-          !PLACEHOLDER_NAMES.has(paddleData.name) &&
-          !isGarbageOcrName(paddleData.name);
-
-        if (isPaddleGood) {
-          console.log(`PaddleOCR Success: ID="${paddleData.idNum}" Name="${paddleData.name}" DocType="${paddleData.docType}"`);
-          const croppedFace = paddleRes?.faceBase64 || await extractFace(buffer, paddleData.docType, paddleRes?.faceBox);
-          if (croppedFace) paddleData.facePhotoBase64 = croppedFace;
-          paddleData.lowQuality = false;
-          return paddleData;
-        } else {
-          console.log(`PaddleOCR extracted initial text (ID="${paddleData.idNum}", Name="${paddleData.name}"). Proceeding with full pipeline verification...`);
-        }
+      } catch (pError) {
+        console.warn('PaddleOCR step skipped due to execution error:', pError.message);
       }
-    } catch (pError) {
-      console.warn('PaddleOCR step skipped due to execution error:', pError.message);
-    }
 
     // ── 1. Try Google Cloud Vision API (free tier: 1000 req/month) ───────────────
     // Key is read from DB settings first (configurable in app UI), then .env fallback.
@@ -2892,7 +2924,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
                 .png()
                 .toBuffer();
               bufferVariants.push(redChannelBuf);
-            } catch (_) {}
+            } catch (_) { }
 
             try {
               // Variant B: High Contrast Linear Boost
@@ -2904,7 +2936,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
                 .png()
                 .toBuffer();
               bufferVariants.push(linearBuf);
-            } catch (_) {}
+            } catch (_) { }
 
             try {
               // Variant C: Standard Grayscale Normalize
@@ -2916,7 +2948,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
                 .png()
                 .toBuffer();
               bufferVariants.push(standardBuf);
-            } catch (_) {}
+            } catch (_) { }
 
             for (const footerBuffer of bufferVariants) {
               // Try PSM 11 (sparse text) and PSM 6 (single block)
@@ -3048,6 +3080,7 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
 module.exports = {
   countryMap,
   qidCountryMap,
+  cleanPassportNumber,
   extractDates,
   parseMRZ,
   parseQIDText,
