@@ -239,40 +239,106 @@ const parsePassportMRZ = (ocrText) => {
 
 // ── Qatar QID Parser (11 Digits starting with 2 or 3) ────────────────────────
 const parseQatarQID = (ocrText) => {
-  // 11 digit pattern starting with 2 or 3
-  const qidMatch = ocrText.match(/\b([23][0-9]{10})\b/);
-  if (!qidMatch) return null;
+  if (!ocrText) return null;
 
-  const qidNo = qidMatch[1];
+  // 1. QID Number: Explicit label or 11-digit pattern starting with 2 or 3
+  let qidNo = '';
+  const labeledId = ocrText.match(/(?:ID\.?\s*No\.?|ID\s*NUMBER|QID|PERSONAL\s*NO|الرقم\s*الشخصي)[\s:]*([23][0-9OoQqIliT|!SsBbZz]{10})\b/i);
+  if (labeledId) {
+    qidNo = labeledId[1]
+      .replace(/[OoQq]/g, '0')
+      .replace(/[IliT|!]/g, '1')
+      .replace(/[Zz]/g, '2')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Bb]/g, '8');
+  } else {
+    const standaloneMatch = ocrText.match(/\b([23][0-9]{10})\b/);
+    if (standaloneMatch) qidNo = standaloneMatch[1];
+  }
+
+  if (!qidNo || !/^[23]\d{10}$/.test(qidNo)) return null;
+
   const century = qidNo[0] === '2' ? '19' : '20';
   const birthYear = `${century}${qidNo.substring(1, 3)}`;
   const natCode = qidNo.substring(3, 6);
-  const nationality = QID_NATIONALITY_CODES[natCode] || 'QATAR';
+  let nationality = QID_NATIONALITY_CODES[natCode] || 'QATAR';
 
-  // Extract Name
+  // 2. Nationality from text label (e.g. Nationality: INDIA)
+  const natMatch = ocrText.match(/(?:nationality|nat|country|الجنسية)[\s:]+([A-Za-z]+)/i);
+  if (natMatch && natMatch[1].length >= 3 && !/STATE|QATAR|PERMIT/i.test(natMatch[1])) {
+    nationality = natMatch[1].trim().toUpperCase();
+  }
+
+  // 3. Extract Name (e.g. Name: RONNY VARGHESE PUTHOOR)
   let name = '';
   const lines = ocrText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const nameLabelRegex = /(?:NAME|FULL\s*NAME|NOME|NAINE|الاسم)\s*[:\s\/-]?\s*([A-Za-z\s'-]+)/i;
+  const nameLabelRegex = /(?:^|\b)(?:NAME|FULL\s*NAME|CARD\s*HOLDER|NOME|NAINE|الاسم)\s*[:\s\/-]+\s*([A-Za-z\s'-]+)/i;
   for (const line of lines) {
     const m = line.match(nameLabelRegex);
-    if (m && m[1] && m[1].length >= 4 && !/MINISTRY|INTERIOR|QATAR|RESIDENCY/i.test(m[1])) {
-      name = m[1].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim().toUpperCase();
-      break;
+    if (m && m[1]) {
+      const clean = m[1].replace(/[^A-Za-z\s'-]/g, ' ').replace(/\s+/g, ' ').trim().toUpperCase();
+      if (clean.length >= 4 && !/MINISTRY|INTERIOR|QATAR|RESIDENCY|PERMIT|STATE/i.test(clean)) {
+        name = clean;
+        break;
+      }
     }
   }
 
-  // Dates
-  const dates = extractDocumentDates(ocrText);
+  // If label didn't match, check from bottom line upwards for full English name
+  if (!name) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i];
+      if (/^[A-Z\s'-]{6,40}$/.test(l)) {
+        const upper = l.trim().toUpperCase();
+        if (!/STATE|QATAR|RESIDENCY|PERMIT|MINISTRY|INTERIOR|NATIONALITY|OCCUPATION|EXPIRY/i.test(upper)) {
+          name = upper;
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Extract Specific Labeled Dates
+  const parseDateStr = (str) => {
+    if (!str) return null;
+    const m = str.match(/([0-9]{1,2})[\/\-\.]([0-9]{1,2})[\/\-\.]([0-9]{2,4})/);
+    if (!m) return null;
+    let d = parseInt(m[1]), mo = parseInt(m[2]), y = parseInt(m[3]);
+    if (m[3].length === 2) {
+      y = y > 50 ? 1900 + y : 2000 + y;
+    }
+    if (mo > 12 && d <= 12) {
+      const tmp = d; d = mo; mo = tmp;
+    }
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  };
+
   let dob = `${birthYear}-01-01`;
   let exp = '2030-01-01';
 
-  if (dates.length > 0) {
-    const matchingDob = dates.find(d => String(d.year) === birthYear);
-    if (matchingDob) dob = matchingDob.iso;
-    else dob = dates[0].iso;
+  const dobMatch = ocrText.match(/(?:D\.?O\.?B\.?|Birth|تاريخ\s*الميلاد)[\s:]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i);
+  const expMatch = ocrText.match(/(?:Expiry|Exp|الصلاحية|تاريخ\s*الانتهاء)[\s:]+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})/i);
 
-    if (dates.length > 1) {
-      exp = dates[dates.length - 1].iso;
+  if (dobMatch) {
+    const parsedDob = parseDateStr(dobMatch[1]);
+    if (parsedDob) dob = parsedDob;
+  }
+  if (expMatch) {
+    const parsedExp = parseDateStr(expMatch[1]);
+    if (parsedExp) exp = parsedExp;
+  }
+
+  // Fallback to all found dates if labels missed
+  if (!dobMatch && !expMatch) {
+    const dates = extractDocumentDates(ocrText);
+    if (dates.length > 0) {
+      const matchingDob = dates.find(d => String(d.year) === birthYear);
+      if (matchingDob) dob = matchingDob.iso;
+      else dob = dates[0].iso;
+
+      if (dates.length > 1) {
+        exp = dates[dates.length - 1].iso;
+      }
     }
   }
 

@@ -1248,6 +1248,15 @@ const QID_HEADER_WORDS = new Set([
   'ETHIOPIAN', 'KENYA', 'KENYAN', 'UGANDA', 'UGANDAN'
 ]);
 
+// Nationalities mapping for QID numbers (3 digits after birth year)
+const QID_COUNTRY_MAP = {
+  '634': 'QATAR', '356': 'INDIA', '586': 'PAKISTAN', '050': 'BANGLADESH', '144': 'SRI LANKA',
+  '524': 'NEPAL', '608': 'PHILIPPINES', '360': 'INDONESIA', '704': 'VIETNAM', '818': 'EGYPT',
+  '710': 'SOUTH AFRICA', '826': 'UNITED KINGDOM', '840': 'UNITED STATES', '784': 'UAE',
+  '682': 'SAUDI ARABIA', '482': 'KENYA', '566': 'NIGERIA', '800': 'UGANDA', '887': 'YEMEN',
+  '400': 'JORDAN', '422': 'LEBANON', '760': 'SYRIA', '368': 'IRAQ', '729': 'SUDAN', '706': 'SOMALIA'
+};
+
 const filterMrzLinesFromText = (ocrText) => {
   return ocrText.split('\n').filter(l => {
     const clean = l.replace(/\s/g, '').toUpperCase();
@@ -1267,14 +1276,14 @@ const isValidQidNumber = (qid) => qid && qid.length === 11 && /^[23]/.test(qid) 
 const pushQidCandidate = (candidates, raw, labeled, lineIndex = 0) => {
   const digits = normalizeQidDigits(raw);
   if (digits.length === 11 && /^[23]/.test(digits) && isValidQidNumber(digits)) {
-    candidates.push({ qid: digits, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (qidCountryMap[digits.substring(3, 6)] ? 50 : 0) });
+    candidates.push({ qid: digits, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (QID_COUNTRY_MAP[digits.substring(3, 6)] ? 50 : 0) });
     return;
   }
   if (digits.length > 11) {
     for (let j = 0; j <= digits.length - 11; j++) {
       const sub = digits.substring(j, j + 11);
       if (isValidQidNumber(sub)) {
-        candidates.push({ qid: sub, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (qidCountryMap[sub.substring(3, 6)] ? 50 : 0) });
+        candidates.push({ qid: sub, score: (labeled ? 100 : 0) + Math.max(0, 8 - lineIndex) + (QID_COUNTRY_MAP[sub.substring(3, 6)] ? 50 : 0) });
       }
     }
   }
@@ -1363,8 +1372,8 @@ const isGarbageOcrName = (candidate) => {
   // Reject standalone repeated consonant 2-letter words like GG, DD, ZZ, XX, QQ, WW, JJ, KK, CC, VV, FF, BB, PP, TT
   if (/\b(GG|DD|ZZ|XX|QQ|WW|JJ|KK|CC|VV|FF|BB|PP|TT)\b/i.test(clean)) return true;
 
-  // Filter known top-header card title OCR garble combinations (e.g. "TATE VR AAR FO JAD D", "BUUREN FHT")
-  if (/(?:TATE|STATE|PERMIT|RESIDENCY|BUUREN|FHT|WERNER|ELD|OUD|JB|JY|AA|JF|OUL|JD|GY|AAD|XX|ZZ|QQ|WW|II|UU)\b/i.test(clean)) return true;
+  // Filter known top-header card title OCR garble words (e.g. "TATE VR AAR FO JAD D", "BUUREN FHT")
+  if (/\b(?:TATE|STATE|PERMIT|RESIDENCY|BUUREN|FHT|WERNER)\b/i.test(clean)) return true;
 
   const words = clean.split(/\s+/).filter(Boolean);
   if (words.length === 0) return true;
@@ -1520,7 +1529,7 @@ const extractQidNameFromText = (ocrText) => {
 };
 
 const extractQidNationality = (ocrText, countryCode) => {
-  let nationality = qidCountryMap[countryCode] || '';
+  let nationality = QID_COUNTRY_MAP[countryCode] || '';
   const natCountries = ['INDIA', 'PAKISTAN', 'QATAR', 'NEPAL', 'BANGLADESH', 'PHILIPPINES', 'SRI LANKA',
     'EGYPT', 'JORDAN', 'LEBANON', 'SYRIA', 'YEMEN', 'SUDAN', 'USA', 'UNITED STATES', 'UNITED KINGDOM'];
   const upper = ocrText.toUpperCase();
