@@ -42,7 +42,7 @@ const getPythonCmd = () => {
 };
 
 // Helper to run high-accuracy local Python PaddleOCR (RapidOCR onnxruntime) with high-speed Sharp pre-resizing
-const runPaddleOcr = (filePathOrBuffer) => {
+const runPaddleOcr = (filePathOrBuffer, targetDocType = 'Auto') => {
   return new Promise(async (resolve) => {
     let tempPath = null;
     let imagePath = filePathOrBuffer;
@@ -82,7 +82,7 @@ const runPaddleOcr = (filePathOrBuffer) => {
       const pyBin = getPythonCmd();
 
       const runWithBin = (binPath) => {
-        execFile(binPath, [scriptPath, imagePath], { timeout: 6000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        execFile(binPath, [scriptPath, imagePath, targetDocType || 'Auto'], { timeout: 6000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
           if (err && binPath === 'python' && pyBin !== 'python') {
             // Retry with explicit resolved absolute path if simple 'python' command failed
             return runWithBin(pyBin);
@@ -2598,8 +2598,8 @@ const processDocumentOcr = async (filePathOrBuffer, fileName, docType) => {
       console.log('PaddleOCR: SKIPPED (disabled in settings)');
     } else
       try {
-        console.log('Running local PaddleOCR (RapidOCR onnxruntime)...');
-        const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer);
+        console.log(`Running local PaddleOCR (RapidOCR onnxruntime) for docType=${docType || 'Auto'}...`);
+        const paddleRes = await runPaddleOcr(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : buffer, docType);
         const paddleText = typeof paddleRes === 'string' ? paddleRes : paddleRes?.text;
 
         if (paddleText) {

@@ -139,10 +139,10 @@ import io
 import base64
 
 
-def detect_document_and_face(image_path, sorted_items):
+def detect_document_and_face(image_path, sorted_items, doc_type='Auto'):
     """
     Detect document card boundaries and estimate user face photo region
-    from text layout bounding boxes and crop portrait image.
+    from text layout bounding boxes and crop portrait image for both Passport and QID.
     """
     if not sorted_items:
         return None, None, None
@@ -180,28 +180,41 @@ def detect_document_and_face(image_path, sorted_items):
                 'height': card_h
             }
 
-            # QID portrait photo is located on the RIGHT side of the card layout
-            qid_face_left = max(0, int(card_left + card_w * 0.58))
-            qid_face_top = max(0, int(card_top + card_h * 0.05))
-            qid_face_w = min(img_w - qid_face_left, int(card_w * 0.40))
-            qid_face_h = min(img_h - qid_face_top, int(card_h * 0.88))
+            full_text = " ".join([i['text'] for i in sorted_items]).upper()
 
-            if qid_face_w < 10 or qid_face_h < 10:
+            # Determine whether this is a Passport or QID for face photo positioning
+            is_passport = doc_type.lower() == 'passport' or 'P<' in full_text or 'PASSPORT' in full_text or 'REPUBLIC' in full_text
+            is_qid = doc_type.lower() == 'qid' or 'QID' in full_text or 'RESIDENCY' in full_text or 'PERMIT' in full_text or 'QATAR' in full_text
+
+            if is_passport and not is_qid:
+                # Passport portrait photo is located on the LEFT side of the document page layout
+                face_left = max(0, int(card_left + card_w * 0.02))
+                face_top = max(0, int(card_top + card_h * 0.12))
+                face_w = min(img_w - face_left, int(card_w * 0.38))
+                face_h = min(img_h - face_top, int(card_h * 0.65))
+            else:
+                # QID portrait photo is located on the RIGHT side of the card layout
+                face_left = max(0, int(card_left + card_w * 0.58))
+                face_top = max(0, int(card_top + card_h * 0.05))
+                face_w = min(img_w - face_left, int(card_w * 0.40))
+                face_h = min(img_h - face_top, int(card_h * 0.88))
+
+            if face_w < 10 or face_h < 10:
                 return card_box, None, None
 
             face_box = {
-                'left': qid_face_left,
-                'top': qid_face_top,
-                'width': qid_face_w,
-                'height': qid_face_h
+                'left': face_left,
+                'top': face_top,
+                'width': face_w,
+                'height': face_h
             }
 
             # Crop user face photo
             face_crop = img.crop((
-                qid_face_left,
-                qid_face_top,
-                qid_face_left + qid_face_w,
-                qid_face_top + qid_face_h
+                face_left,
+                face_top,
+                face_left + face_w,
+                face_top + face_h
             ))
             face_crop = face_crop.resize((240, 240), Image.Resampling.LANCZOS)
             buffered = io.BytesIO()
@@ -219,6 +232,8 @@ def main():
         sys.exit(1)
 
     image_path = sys.argv[1]
+    doc_type = sys.argv[2] if len(sys.argv) > 2 else 'Auto'
+
     if not os.path.exists(image_path):
         print(json.dumps({"error": f"Image file not found: {image_path}"}))
         sys.exit(1)
@@ -241,7 +256,7 @@ def main():
             lines_with_scores.append({"text": item['text'], "score": item['score']})
 
         full_text = "\n".join(lines)
-        card_box, face_box, face_base64 = detect_document_and_face(image_path, sorted_items)
+        card_box, face_box, face_base64 = detect_document_and_face(image_path, sorted_items, doc_type)
 
         print(json.dumps({
             "success": True,
