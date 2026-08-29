@@ -730,17 +730,8 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
 
   const stripFillerNoise = (str) => {
     let clean = str.toUpperCase().replace(/[^A-Z]/g, '').trim();
-    const fillers = /^[KCXLSVTOB01]/;
-    const trailingFillers = /[KCXLSVTOB01]$/;
-
-    // Keep stripping leading fillers as long as length > 2
-    while (clean.length > 2 && fillers.test(clean)) {
-      clean = clean.substring(1);
-    }
-    // Keep stripping trailing fillers as long as length > 2
-    while (clean.length > 2 && trailingFillers.test(clean)) {
-      clean = clean.substring(0, clean.length - 1);
-    }
+    // Only strip trailing/leading filler misreads (<, X, 0, 1), NEVER valid alphabet letters like K, L, S, V, B
+    clean = clean.replace(/^[<X01]+/, '').replace(/[<X01]+$/, '');
     return clean;
   };
 
@@ -791,28 +782,12 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
           cleanGiven = restoreSpecialCharacters(cleanGiven, rawPageWords);
           return { surname: cleanSurname, givenNames: cleanGiven };
         }
-      } else {
-        const fillers = /[KCXLSVTOB01]$/;
-        if (fillers.test(cleanSurname)) {
-          const trimmed = cleanSurname.substring(0, cleanSurname.length - 1);
-          if (trimmed.endsWith(w2) && w2.length < trimmed.length) {
-            const prefix = trimmed.substring(0, trimmed.length - w2.length);
-            const cleanedPrefix = stripFillerNoise(prefix);
-            if (cleanedPrefix.length >= 3) {
-              cleanSurname = cleanedPrefix;
-              cleanGiven = w2;
-              cleanSurname = restoreSpecialCharacters(cleanSurname, rawPageWords);
-              cleanGiven = restoreSpecialCharacters(cleanGiven, rawPageWords);
-              return { surname: cleanSurname, givenNames: cleanGiven };
-            }
-          }
-        }
       }
     }
   }
 
-  // Case 2: Surname and/or Given Names have trailing filler noise or merged words without separators (e.g. KINGDOMLKFIVE, OBAMAK, MICHELLEC)
-  const isPureNoise = (str) => /^[KCXLSVTOB01<]*$/.test(str.toUpperCase());
+  // Case 2: Surname and/or Given Names alignment
+  const isPureNoise = (str) => /^[<X01]*$/.test(str.toUpperCase()) || /^([CLXK])\1+$/i.test(str.toUpperCase());
 
   const alignSegment = (seg) => {
     if (!seg) return '';
@@ -825,19 +800,11 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
       if (cleanSeg === cleanW) return w;
     }
 
-    // 2. Check if cleanSeg is part of a larger page word (e.g. seg="OCONNOR" is part of w="O'CONNOR-FIVE")
+    // 2. Check if cleanSeg is part of a larger page word with hyphen/apostrophe (e.g. seg="OCONNOR" is part of w="O'CONNOR")
     for (const w of pageWords) {
-      const cleanW = w.replace(/[^A-Z]/g, '');
-      if (cleanW.includes(cleanSeg)) {
-        // If the difference is a single leading/trailing character that is in the noise set,
-        // it was likely stolen by the MRZ separator (e.g. w="KOPAL", seg="OPAL" due to KK separator).
-        if (cleanW.length === cleanSeg.length + 1) {
-          const extraChar = cleanW.startsWith(cleanSeg) ? cleanW[cleanW.length - 1] : cleanW[0];
-          if (isPureNoise(extraChar)) {
-            return w; // restore stolen letter
-          }
-        }
-        return seg; // keep it as is, restoreSpecialCharacters will merge/restore it later
+      if (w.includes('-') || w.includes("'")) {
+        const cleanW = w.replace(/[^A-Z]/g, '');
+        if (cleanSeg === cleanW) return w;
       }
     }
 
@@ -865,34 +832,8 @@ const alignNameWithPageText = (surname, givenNames, ocrText) => {
       }
     }
 
-    const normalizeOCRConfusions = (str) => {
-      return str.toUpperCase()
-        .replace(/[GQO0]/g, 'C')
-        .replace(/[1LT]/g, 'I')
-        .replace(/[5]/g, 'S')
-        .replace(/[8]/g, 'B')
-        .replace(/[V]/g, 'U');
-    };
-
-    // 4. Check if seg contains a single page word surrounded by noise
-    // (e.g. seg="CYOUNANCLC", w="YOUNAN")
-    for (const w of pageWords) {
-      const cleanW = w.replace(/[^A-Z]/g, '');
-      const normW = normalizeOCRConfusions(cleanW);
-      const normSeg = normalizeOCRConfusions(cleanSeg);
-
-      const idx = normSeg.indexOf(normW);
-      if (idx !== -1) {
-        const prefix = cleanSeg.substring(0, idx);
-        const suffix = cleanSeg.substring(idx + cleanW.length);
-        if (isPureNoise(prefix) && isPureNoise(suffix)) {
-          return seg.substring(idx, idx + cleanW.length); // return matching part of original seg to keep MRZ spelling
-        }
-      }
-    }
-
     // If it is pure discardable noise and didn't match any page words, discard it!
-    const isDiscardableNoise = (str) => /^[CLXK01<]+$/.test(str.toUpperCase());
+    const isDiscardableNoise = (str) => /^[X01<]+$/.test(str.toUpperCase());
     if (isDiscardableNoise(seg)) {
       return '';
     }
