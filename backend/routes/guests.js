@@ -5,7 +5,6 @@ const path = require('path');
 const db = require('../db');
 const scanner = require('../utils/scanner');
 const { processDocumentOcr } = require('../utils/ocrParser');
-const { processIndependentOcr } = require('../utils/independentOcrEngine');
 const { requireAuth } = require('../middleware/auth');
 const {
   isValidId,
@@ -62,7 +61,7 @@ const findPhotocopyFilePath = (baseDir, idNum) => {
           searchQueue.push(path.join(currentDir, item.name));
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   return null;
 };
@@ -92,7 +91,7 @@ router.get('/scan-copy/:idNum', async (req, res) => {
         return res.sendFile(foundScannerPath);
       }
     }
-    
+
     return res.status(404).json({ error: 'Scanned document photocopy not found' });
   } catch (err) {
     console.error('Fetch scanned copy error:', err.message);
@@ -149,7 +148,7 @@ const saveBase64Photocopy = async (idNum, base64Data) => {
     const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) return;
     const buffer = Buffer.from(matches[2], 'base64');
-    
+
     const rootUploads = path.join(__dirname, '..', 'uploads', 'photocopies');
     const destDir = getYearMonthDayFolder(rootUploads);
     const destPath = path.join(destDir, `${idNum}.jpg`);
@@ -333,15 +332,15 @@ router.get('/all', async (req, res) => {
 
 // Create new guest
 router.post('/', async (req, res) => {
-  const name      = sanitizeStr(req.body.name, 255);
-  const idNum     = sanitizeStr(req.body.idNum, 100);
-  const docType   = sanitizeStr(req.body.docType, 50);
+  const name = sanitizeStr(req.body.name, 255);
+  const idNum = sanitizeStr(req.body.idNum, 100);
+  const docType = sanitizeStr(req.body.docType, 50);
   const nationality = sanitizeStr(req.body.nationality, 100);
-  const dob       = sanitizeStr(req.body.dob, 10);
+  const dob = sanitizeStr(req.body.dob, 10);
   const expiryDate = sanitizeStr(req.body.expiryDate, 10);
-  const phone     = sanitizeStr(req.body.phone, 50);
-  const rawData   = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
-  const photo     = req.body.photo || null;
+  const phone = sanitizeStr(req.body.phone, 50);
+  const rawData = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
+  const photo = req.body.photo || null;
   const checkedIn = !!req.body.checkedIn;
 
   if (!name || !idNum || !docType || !nationality || !dob || !expiryDate) {
@@ -401,15 +400,15 @@ router.put('/:id', async (req, res) => {
   const { id } = req.params;
   if (!isValidId(id)) return res.status(400).json({ error: 'Invalid guest ID' });
 
-  const name       = sanitizeStr(req.body.name, 255);
-  const idNum      = sanitizeStr(req.body.idNum, 100);
-  const docType    = sanitizeStr(req.body.docType, 50);
+  const name = sanitizeStr(req.body.name, 255);
+  const idNum = sanitizeStr(req.body.idNum, 100);
+  const docType = sanitizeStr(req.body.docType, 50);
   const nationality = sanitizeStr(req.body.nationality, 100);
-  const dob        = sanitizeStr(req.body.dob, 10);
+  const dob = sanitizeStr(req.body.dob, 10);
   const expiryDate = sanitizeStr(req.body.expiryDate, 10);
-  const phone      = sanitizeStr(req.body.phone, 50);
-  const rawData    = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
-  const photo      = req.body.photo || null;
+  const phone = sanitizeStr(req.body.phone, 50);
+  const rawData = typeof req.body.rawData === 'string' ? req.body.rawData.slice(0, 2000) : null;
+  const photo = req.body.photo || null;
 
   if (!name || !idNum || !docType || !nationality || !dob || !expiryDate) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -481,7 +480,7 @@ router.put('/:id/check-in', async (req, res) => {
 
     const checkInTime = new Date().toLocaleTimeString('en-GB');
     await db.query(
-      'UPDATE guests SET checked_in = 1, check_in_time = ?, saved_date = ? WHERE id = ?', 
+      'UPDATE guests SET checked_in = 1, check_in_time = ?, saved_date = ? WHERE id = ?',
       [checkInTime, operationalDate, id]
     );
     res.json({ message: 'Checked in successfully', checkInTime });
@@ -776,11 +775,11 @@ router.post('/:id/permanent', async (req, res) => {
 router.post('/scan-detect', async (req, res) => {
   try {
     const { docType } = req.body; // 'QID' or 'Passport'
-    
+
     const [settings] = await db.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("scanner_folder", "selected_scanner")');
     const settingsMap = {};
     settings.forEach(s => { settingsMap[s.setting_key] = s.setting_value; });
-    
+
     let scannerFolder = settingsMap['scanner_folder'];
     const selectedScanner = settingsMap['selected_scanner'];
 
@@ -888,20 +887,10 @@ router.post('/scan-detect', async (req, res) => {
       });
     }
 
-    // Step D: Process document OCR on targetScanFile (checks independent OCR setting)
-    let useIndependentOcr = false;
-    try {
-      const [r] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "ocr_rapid_enabled" LIMIT 1');
-      if (r.length > 0 && r[0].setting_value === '1') {
-        useIndependentOcr = true;
-      }
-    } catch (_) {}
-
-    const detectedData = useIndependentOcr
-      ? await processIndependentOcr(targetScanFile, path.basename(targetScanFile), docType)
-      : await processDocumentOcr(targetScanFile, path.basename(targetScanFile), docType);
+    // Step D: Process document OCR on targetScanFile
+    const detectedData = await processDocumentOcr(targetScanFile, path.basename(targetScanFile), docType);
     const ext = path.extname(targetScanFile);
-    
+
     // Uniquify generic/unknown ID numbers to prevent file collisions
     const genericNames = ['unknown', 'image', 'scan', 'photo'];
     let idClean = (detectedData.idNum || '').toLowerCase().trim();
@@ -925,7 +914,7 @@ router.post('/scan-detect', async (req, res) => {
       fs.renameSync(targetScanFile, archivePath);
     } catch (renameErr) {
       fs.copyFileSync(targetScanFile, archivePath);
-      try { fs.unlinkSync(targetScanFile); } catch (e) {}
+      try { fs.unlinkSync(targetScanFile); } catch (e) { }
     }
     console.log(`Saved copy inside archive folder: ${archivePath}`);
 
@@ -943,14 +932,14 @@ router.post('/scan-detect', async (req, res) => {
           try {
             fs.copyFileSync(compPath, compDest);
             fs.unlinkSync(compPath);
-          } catch (e2) {}
+          } catch (e2) { }
         }
       }
     }
 
     const base64Data = fs.readFileSync(archivePath).toString('base64');
     const mimeType = ext.toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
-    
+
     res.json({
       ...detectedData,
       scanSource,
@@ -961,7 +950,7 @@ router.post('/scan-detect', async (req, res) => {
     res.status(500).json({ error: 'Internal server error processing scan: ' + err.message });
   }
 });
- 
+
 // Upload and detect file from client, extract information and save photo copy
 router.post('/upload-detect', async (req, res) => {
   try {
@@ -969,29 +958,19 @@ router.post('/upload-detect', async (req, res) => {
     if (!fileName || !fileData) {
       return res.status(400).json({ error: 'Missing file name or data.' });
     }
- 
+
     // Extract base64 data
     const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
       return res.status(400).json({ error: 'Invalid base64 image data.' });
     }
- 
+
     const mimeType = matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     const ext = path.extname(fileName) || '.jpg';
- 
-    let useIndependentOcr = false;
-    try {
-      const [r] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "ocr_rapid_enabled" LIMIT 1');
-      if (r.length > 0 && r[0].setting_value === '1') {
-        useIndependentOcr = true;
-      }
-    } catch (_) {}
 
-    const detectedData = useIndependentOcr
-      ? await processIndependentOcr(buffer, fileName, docType)
-      : await processDocumentOcr(buffer, fileName, docType);
- 
+    const detectedData = await processDocumentOcr(buffer, fileName, docType);
+
     // Uniquify generic/unknown ID numbers to prevent file collisions
     const genericNames = ['unknown', 'image', 'scan', 'photo'];
     let idClean = (detectedData.idNum || '').toLowerCase().trim();
@@ -1007,7 +986,7 @@ router.post('/upload-detect', async (req, res) => {
     const destPath = path.join(destDir, `${detectedData.idNum}${ext.toLowerCase()}`);
     fs.writeFileSync(destPath, buffer);
     console.log(`Successfully saved uploaded photocopy for ID ${detectedData.idNum} to ${destPath}`);
- 
+
     // ALSO save to selected scanner folder's archive/YYYY/MM/DD!
     const [settingsRows] = await db.query('SELECT setting_value FROM settings WHERE setting_key = "scanner_folder"');
     const scannerFolder = settingsRows[0]?.setting_value;
@@ -1027,5 +1006,5 @@ router.post('/upload-detect', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
- 
+
 module.exports = router;

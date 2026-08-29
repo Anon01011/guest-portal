@@ -86,7 +86,6 @@ export default function App() {
   const [ocrVisionEnabled, setOcrVisionEnabled] = useState(true);
   const [ocrScannerApiEnabled, setOcrScannerApiEnabled] = useState(true);
   const [ocrTesseractEnabled, setOcrTesseractEnabled] = useState(true);
-  const [ocrRapidEnabled, setOcrRapidEnabled] = useState(true);
 
   // Main App State
   const [dashboardDate, setDashboardDate] = useState('');
@@ -326,7 +325,6 @@ export default function App() {
         setOcrVisionEnabled(data.ocr_vision_enabled !== '0');
         setOcrScannerApiEnabled(data.ocr_scanner_api_enabled !== '0');
         setOcrTesseractEnabled(data.ocr_tesseract_enabled !== '0');
-        setOcrRapidEnabled(data.ocr_rapid_enabled !== '0');
 
         // Default dashboard date to operational date if not set yet
         setDashboardDate(prev => prev || data.operational_date);
@@ -361,8 +359,7 @@ export default function App() {
           ocrPaddleEnabled,
           ocrVisionEnabled,
           ocrScannerApiEnabled,
-          ocrTesseractEnabled,
-          ocrRapidEnabled
+          ocrTesseractEnabled
         })
       });
       if (res.ok) {
@@ -375,23 +372,6 @@ export default function App() {
       showToast('Error setting scanner configuration.', 'warn');
     }
   };
-
-  const handleToggleOcrEngine = async (key, val) => {
-    if (key === 'ocrPaddleEnabled') setOcrPaddleEnabled(val);
-    if (key === 'ocrVisionEnabled') setOcrVisionEnabled(val);
-    if (key === 'ocrScannerApiEnabled') setOcrScannerApiEnabled(val);
-    if (key === 'ocrTesseractEnabled') setOcrTesseractEnabled(val);
-    if (key === 'ocrRapidEnabled') setOcrRapidEnabled(val);
-    try {
-      await fetchWithAuth('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: val })
-      });
-      showToast('OCR engine updated', 'success');
-    } catch (_) { }
-  };
-
   const fetchAvailableScanners = async () => {
     try {
       const res = await fetchWithAuth('/api/settings/scanners');
@@ -858,19 +838,8 @@ export default function App() {
         // Proper title case the name
         name = name.split(' ').map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
 
-        // Extract Passport Number (first 9 chars, strip angle brackets) & correct Z vs 2 OCR misreads
-        let rawIdNum = line2.substring(0, 9).replace(/</g, '').trim().toUpperCase();
-        let idNum = rawIdNum;
-        if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{7}$/.test(rawIdNum)) {
-          idNum = rawIdNum[0] + rawIdNum.substring(1)
-            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
-        } else if (/^2[0-9OoQqIliT|!SsBbZzGg]{7}$/.test(rawIdNum)) {
-          idNum = 'Z' + rawIdNum.substring(1)
-            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
-        } else if (/^[A-Z][0-9OoQqIliT|!SsBbZzGg]{8}$/.test(rawIdNum)) {
-          idNum = rawIdNum[0] + rawIdNum.substring(1)
-            .replace(/[OoQq]/g, '0').replace(/[IliT|!]/g, '1').replace(/[Zz]/g, '2').replace(/[Ss]/g, '5').replace(/[Bb]/g, '8').replace(/[Gg]/g, '6');
-        }
+        // Extract Passport Number (first 9 chars, strip angle brackets)
+        const idNum = line2.substring(0, 9).replace(/</g, '').trim();
 
         // Extract DOB (YYMMDD at index 13 to 19)
         const yy = line2.substring(13, 15);
@@ -2429,9 +2398,6 @@ export default function App() {
             setOcrScannerApiEnabled={setOcrScannerApiEnabled}
             ocrTesseractEnabled={ocrTesseractEnabled}
             setOcrTesseractEnabled={setOcrTesseractEnabled}
-            ocrRapidEnabled={ocrRapidEnabled}
-            setOcrRapidEnabled={setOcrRapidEnabled}
-            handleToggleOcrEngine={handleToggleOcrEngine}
           />
         )}
 
@@ -2529,8 +2495,8 @@ export default function App() {
           pinModalAction === 'permanent_delete' || pinModalAction === 'bulk_permanent_delete'
             ? 'Permanently Destroy'
             : pinModalAction === 'restore' || pinModalAction === 'bulk_restore'
-            ? 'Restore Record(s)'
-            : 'Soft Delete'
+              ? 'Restore Record(s)'
+              : 'Soft Delete'
         }
         confirmClass={
           pinModalAction === 'permanent_delete' || pinModalAction === 'bulk_permanent_delete' || pinModalAction === 'soft_delete'
@@ -2609,7 +2575,7 @@ export default function App() {
               const firstLine = rawErr.split(/\n|;|\r/)[0].trim();
               const shortErr = firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
               const isTwain = (tempSelectedScanner || '').toLowerCase().startsWith('twain_') ||
-                              (tempSelectedScanner || '').toLowerCase().includes('twain');
+                (tempSelectedScanner || '').toLowerCase().includes('twain');
               return (
                 <div style={{ background: '#fffbeb', borderBottom: '2px solid #fcd34d', padding: '12px 16px', display: 'flex', gap: '10px', alignItems: 'flex-start', fontSize: '12.5px', color: '#78350f' }}>
                   <i className="ti ti-alert-triangle" style={{ fontSize: '20px', color: '#f59e0b', flexShrink: 0, marginTop: '1px' }} />
@@ -2698,7 +2664,7 @@ export default function App() {
                       </select>
                       {(() => {
                         const isTwainDev = (tempSelectedScanner || '').toLowerCase().startsWith('twain_') || (tempSelectedScanner || '').toLowerCase().includes('twain');
-                        const isPnpDev  = (tempSelectedScanner || '').toLowerCase().startsWith('pnp_');
+                        const isPnpDev = (tempSelectedScanner || '').toLowerCase().startsWith('pnp_');
                         if (isTwainDev || isPnpDev) {
                           return (
                             <div style={{ marginTop: '10px', padding: '10px 12px', background: '#fffbeb', color: '#78350f', borderRadius: '6px', fontSize: '11.5px', lineHeight: '1.5', border: '1px solid #fcd34d', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
@@ -2840,12 +2806,12 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#eff6ff' }}><i className="ti ti-cpu" style={{ color: '#2563eb' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#2563eb'}} /> PaddleOCR <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Local ONNX - Recommended)</span></div>
+                        <div className="modal-ocr-name"><RiRobotLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#2563eb' }} /> PaddleOCR <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Local ONNX - Recommended)</span></div>
                         <div className="modal-ocr-desc">Runs locally on PC — highest accuracy &amp; sub-second speed.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => handleToggleOcrEngine('ocrPaddleEnabled', e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => setOcrPaddleEnabled(e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
@@ -2855,12 +2821,12 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiShieldCheckLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
+                        <div className="modal-ocr-name"><RiShieldCheckLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#16a34a' }} /> Secure Scanner Web Service <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Regula / Network)</span></div>
                         <div className="modal-ocr-desc">Uses hardware scanner Web API URL.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => handleToggleOcrEngine('ocrScannerApiEnabled', e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => setOcrScannerApiEnabled(e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
@@ -2870,27 +2836,27 @@ export default function App() {
                     <div className="modal-ocr-left">
                       <div className="modal-ocr-icon" style={{ background: '#fefce8' }}><i className="ti ti-brand-google" style={{ color: '#ca8a04' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiGlobeLine style={{verticalAlign:'middle',marginRight:'5px',color:'#ca8a04'}} /> Google Cloud Vision API <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Cloud OCR)</span></div>
+                        <div className="modal-ocr-name"><RiGlobeLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#ca8a04' }} /> Google Cloud Vision API <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Cloud OCR)</span></div>
                         <div className="modal-ocr-desc">Requires Vision API key set in main Settings overlay.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => handleToggleOcrEngine('ocrVisionEnabled', e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => setOcrVisionEnabled(e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>
 
-                  {/* Independent Rapid OCR Engine */}
+                  {/* Tesseract */}
                   <div className="modal-ocr-row">
                     <div className="modal-ocr-left">
-                      <div className="modal-ocr-icon" style={{ background: '#fdf4ff' }}><i className="ti ti-bolt" style={{ color: '#c026d3' }} /></div>
+                      <div className="modal-ocr-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
                       <div>
-                        <div className="modal-ocr-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#c026d3'}} /> High-Accuracy Neural Engine <span style={{ fontSize: '10px', color: '#166534', fontWeight: 700 }}>(Independent RapidOCR)</span></div>
-                        <div className="modal-ocr-desc">Ultra-accurate standalone neural engine for ID/Passport cards.</div>
+                        <div className="modal-ocr-name"><RiFileTextLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#7c3aed' }} /> Tesseract OCR <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>(Offline JS Safety Fallback)</span></div>
+                        <div className="modal-ocr-desc">Always keeps a safety fallback so scans never fail.</div>
                       </div>
                     </div>
                     <label className="modal-ocr-switch">
-                      <input type="checkbox" checked={!!ocrRapidEnabled} onChange={e => handleToggleOcrEngine('ocrRapidEnabled', e.target.checked)} />
+                      <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => setOcrTesseractEnabled(e.target.checked)} />
                       <span className="modal-ocr-slider" />
                     </label>
                   </div>

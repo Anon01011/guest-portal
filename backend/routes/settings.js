@@ -30,21 +30,20 @@ router.get('/', async (req, res) => {
 // Update settings
 router.put('/', async (req, res) => {
   const VALID_DATE_MODES = ['auto', 'manual'];
-  const { 
-    dateMode, 
-    manualRolloverTime, 
-    scannerFolder, 
-    selectedScanner, 
-    scannerApiUrl, 
-    scannerApiUsername, 
+  const {
+    dateMode,
+    manualRolloverTime,
+    scannerFolder,
+    selectedScanner,
+    scannerApiUrl,
+    scannerApiUsername,
     scannerApiPassword,
     visionApiKey,
     // OCR Engine toggles
     ocrPaddleEnabled,
     ocrVisionEnabled,
     ocrScannerApiEnabled,
-    ocrTesseractEnabled,
-    ocrRapidEnabled
+    ocrTesseractEnabled
   } = req.body;
 
   try {
@@ -104,9 +103,6 @@ router.put('/', async (req, res) => {
     if (ocrTesseractEnabled !== undefined) {
       await saveSetting('ocr_tesseract_enabled', ocrTesseractEnabled ? '1' : '0');
     }
-    if (ocrRapidEnabled !== undefined) {
-      await saveSetting('ocr_rapid_enabled', ocrRapidEnabled ? '1' : '0');
-    }
 
     invalidateSettingsCache();
 
@@ -125,7 +121,7 @@ router.put('/', async (req, res) => {
 router.post('/force-reset', async (req, res) => {
   try {
     const now = new Date();
-    const todayISO = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     await db.query('UPDATE settings SET setting_value = ? WHERE setting_key = "operational_date"', [todayISO]);
     invalidateSettingsCache();
     res.json({ message: 'Operational date reset successfully', operational_date: todayISO });

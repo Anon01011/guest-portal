@@ -60,9 +60,6 @@ export default function SettingsOverlay({
   setOcrScannerApiEnabled,
   ocrTesseractEnabled,
   setOcrTesseractEnabled,
-  ocrRapidEnabled,
-  setOcrRapidEnabled,
-  handleToggleOcrEngine,
   licenseStatus
 }) {
   const [countdown, setCountdown] = React.useState('');
@@ -732,14 +729,14 @@ export default function SettingsOverlay({
                 <div className="ocr-toggle-left">
                   <div className="ocr-toggle-icon" style={{ background: '#eff6ff' }}><i className="ti ti-cpu" style={{ color: '#2563eb' }} /></div>
                   <div>
-                    <div className="ocr-toggle-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#2563eb'}} /> PaddleOCR <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(local Python/ONNX)</span></div>
+                    <div className="ocr-toggle-name"><RiRobotLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#2563eb' }} /> PaddleOCR <span style={{ fontSize: '10px', fontWeight: '400', color: 'var(--text-muted)' }}>(local Python/ONNX)</span></div>
                     <div className="ocr-toggle-desc">Fastest & most accurate. Runs locally — no internet required. <strong>Recommended ON.</strong></div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className={ocrPaddleEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrPaddleEnabled ? 'ON' : 'OFF'}</span>
                   <label className="ocr-switch">
-                    <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrPaddleEnabled', e.target.checked) : setOcrPaddleEnabled(e.target.checked)} />
+                    <input type="checkbox" checked={!!ocrPaddleEnabled} onChange={e => setOcrPaddleEnabled(e.target.checked)} />
                     <span className="ocr-slider" />
                   </label>
                 </div>
@@ -750,14 +747,14 @@ export default function SettingsOverlay({
                 <div className="ocr-toggle-left">
                   <div className="ocr-toggle-icon" style={{ background: '#f0fdf4' }}><i className="ti ti-shield-lock" style={{ color: '#16a34a' }} /></div>
                   <div>
-                    <div className="ocr-toggle-name"><RiShieldCheckLine style={{verticalAlign:'middle',marginRight:'5px',color:'#16a34a'}} /> Secure Scanner Web Service <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Regula / Thales)</span></div>
+                    <div className="ocr-toggle-name"><RiShieldCheckLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#16a34a' }} /> Secure Scanner Web Service <span style={{ fontSize: '10px', fontWeight: '400', color: 'var(--text-muted)' }}>(Regula / Thales)</span></div>
                     <div className="ocr-toggle-desc">Uses the Scanner API URL above. Only active when URL is configured.</div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className={ocrScannerApiEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrScannerApiEnabled ? 'ON' : 'OFF'}</span>
                   <label className="ocr-switch">
-                    <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrScannerApiEnabled', e.target.checked) : setOcrScannerApiEnabled(e.target.checked)} />
+                    <input type="checkbox" checked={!!ocrScannerApiEnabled} onChange={e => setOcrScannerApiEnabled(e.target.checked)} />
                     <span className="ocr-slider" />
                   </label>
                 </div>
@@ -768,14 +765,14 @@ export default function SettingsOverlay({
                 <div className="ocr-toggle-left">
                   <div className="ocr-toggle-icon" style={{ background: '#fefce8' }}><i className="ti ti-brand-google" style={{ color: '#ca8a04' }} /></div>
                   <div>
-                    <div className="ocr-toggle-name"><RiGlobeLine style={{verticalAlign:'middle',marginRight:'5px',color:'#ca8a04'}} /> Google Cloud Vision API <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(1,000 free/month)</span></div>
-                    <div className="ocr-toggle-desc">High accuracy cloud OCR (~1s). Only active when API key is configured above.</div>
+                    <div className="ocr-toggle-name"><RiGlobeLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#ca8a04' }} /> Google Cloud Vision API <span style={{ fontSize: '10px', fontWeight: '400', color: 'var(--text-muted)' }}>(1,000 free/month)</span></div>
+                    <div className="ocr-toggle-desc">High accuracy cloud OCR. Only active when API key is configured above.</div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className={ocrVisionEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrVisionEnabled ? 'ON' : 'OFF'}</span>
                   <label className="ocr-switch">
-                    <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrVisionEnabled', e.target.checked) : setOcrVisionEnabled(e.target.checked)} />
+                    <input type="checkbox" checked={!!ocrVisionEnabled} onChange={e => setOcrVisionEnabled(e.target.checked)} />
                     <span className="ocr-slider" />
                   </label>
                 </div>
@@ -786,32 +783,14 @@ export default function SettingsOverlay({
                 <div className="ocr-toggle-left">
                   <div className="ocr-toggle-icon" style={{ background: '#faf5ff' }}><i className="ti ti-file-text" style={{ color: '#7c3aed' }} /></div>
                   <div>
-                    <div className="ocr-toggle-name"><RiFileTextLine style={{verticalAlign:'middle',marginRight:'5px',color:'#7c3aed'}} /> Tesseract OCR <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(offline JS fallback)</span></div>
-                    <div className="ocr-toggle-desc">When OFF, Tesseract is strictly disabled to maximize scanning speed.</div>
+                    <div className="ocr-toggle-name"><RiFileTextLine style={{ verticalAlign: 'middle', marginRight: '5px', color: '#7c3aed' }} /> Tesseract OCR <span style={{ fontSize: '10px', fontWeight: '400', color: 'var(--text-muted)' }}>(offline JS fallback)</span></div>
+                    <div className="ocr-toggle-desc">Last-resort fallback. Even when OFF, it still runs as a safety net to prevent empty scans.</div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className={ocrTesseractEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrTesseractEnabled ? 'ON' : 'OFF'}</span>
                   <label className="ocr-switch">
-                    <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrTesseractEnabled', e.target.checked) : setOcrTesseractEnabled(e.target.checked)} />
-                    <span className="ocr-slider" />
-                  </label>
-                </div>
-              </div>
-
-              {/* Independent Rapid OCR Engine */}
-              <div className="ocr-toggle-row">
-                <div className="ocr-toggle-left">
-                  <div className="ocr-toggle-icon" style={{ background: '#fdf4ff' }}><i className="ti ti-bolt" style={{ color: '#c026d3' }} /></div>
-                  <div>
-                    <div className="ocr-toggle-name"><RiRobotLine style={{verticalAlign:'middle',marginRight:'5px',color:'#c026d3'}} /> High-Accuracy Neural Engine <span style={{fontSize:'10px',fontWeight:'400',color:'var(--text-muted)'}}>(Independent RapidOCR)</span></div>
-                    <div className="ocr-toggle-desc">Ultra-accurate standalone neural recognition engine for ID/Passport cards.</div>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span className={ocrRapidEnabled ? 'ocr-badge-on' : 'ocr-badge-off'}>{ocrRapidEnabled ? 'ON' : 'OFF'}</span>
-                  <label className="ocr-switch">
-                    <input type="checkbox" checked={!!ocrRapidEnabled} onChange={e => handleToggleOcrEngine ? handleToggleOcrEngine('ocrRapidEnabled', e.target.checked) : setOcrRapidEnabled(e.target.checked)} />
+                    <input type="checkbox" checked={!!ocrTesseractEnabled} onChange={e => setOcrTesseractEnabled(e.target.checked)} />
                     <span className="ocr-slider" />
                   </label>
                 </div>
